@@ -40,8 +40,9 @@ jobs:
 
       - name: Make package public
         run: |
-          curl -s -X PUT \
+          echo "== visibility change =="
+          curl -s -i -X PUT \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/user/packages/container/intel-agents/visibility" \
-            -d '{"visibility":"public"}' || true
+            -d '{"visibility":"public"}'
