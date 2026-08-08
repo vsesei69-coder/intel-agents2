@@ -1,6 +1,7 @@
 #!/bin/sh
 set -e
-cp -r /opt/image/scripts /opt/intel/scripts
+rm -rf /opt/intel/scripts/scripts
+cp -r /opt/image/scripts/. /opt/intel/scripts/
 echo "[bootstrap] scripts synced from image"
 mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_grid \
