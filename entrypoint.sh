@@ -1,9 +1,7 @@
 #!/bin/sh
 set -e
-if [ ! -f /opt/intel/scripts/agent_supervisor.py ]; then
-  echo "[bootstrap] first start: copying code to volume /opt/intel"
-  cp -r /opt/image/scripts /opt/intel/scripts
-fi
+cp -r /opt/image/scripts /opt/intel/scripts
+echo "[bootstrap] scripts synced from image"
 mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_grid \
          /opt/intel/trading_journal_max \
