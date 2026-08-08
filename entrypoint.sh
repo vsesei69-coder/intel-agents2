@@ -20,6 +20,9 @@ for a in agent_monitor grid_agent grid_max_agent grid_corridor_agent xrp_grid_ag
   echo "[bootstrap]  $a pid=$!"
 done
 
+nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
+echo "[bootstrap]  status_server pid=$!"
+
 sleep 5
 echo "[bootstrap] starting supervisor (foreground)"
 exec python scripts/agent_supervisor.py "$@"
