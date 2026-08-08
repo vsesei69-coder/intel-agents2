@@ -167,6 +167,17 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 body = p.read_bytes()
                 self._send(200, body, "application/json")
+            elif self.path == "/health" or self.path == "/health/":
+                self._send(200, json.dumps({"status": "ok"}).encode())
+            elif self.path == "/operator" or self.path == "/operator/":
+                oplog = BASE / "logs" / "operator.jsonl"
+                lines = []
+                if oplog.exists():
+                    try:
+                        lines = [json.loads(l) for l in oplog.read_text().splitlines() if l.strip()][-50:]
+                    except Exception:
+                        pass
+                self._send(200, json.dumps({"operator": lines, "count": len(lines)}, indent=2).encode())
             else:
                 self._send(404, b'{"error":"not found"}')
         except Exception as e:

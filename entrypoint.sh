@@ -22,6 +22,9 @@ done
 nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
 echo "[bootstrap]  status_server pid=$!"
 
+nohup python scripts/watchdog_operator.py > "logs/watchdog.log" 2>&1 &
+echo "[bootstrap]  watchdog_operator pid=$!"
+
 sleep 5
 echo "[bootstrap] starting supervisor (foreground)"
 exec python scripts/agent_supervisor.py "$@"
