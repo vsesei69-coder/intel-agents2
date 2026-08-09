@@ -38,9 +38,10 @@ TAKER_FEE = 0.0004
 SLIPPAGE = 0.0003
 FUNDING_RATE = 0.0001
 
-GRID_RANGE_PCT = float(os.environ.get("GRID_RANGE", "0.03"))
+GRID_RANGE_PCT = float(os.environ.get("GRID_RANGE", "0.02"))
 GRID_ORDERS = int(os.environ.get("GRID_ORDERS", "33"))
 GRID_STEP_PCT = GRID_RANGE_PCT / GRID_ORDERS
+TP_FACTOR = float(os.environ.get("TP_FACTOR", "1.5"))
 MARGIN_SL_PCT = 0.60
 RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 
@@ -152,11 +153,11 @@ def create_grid(symbol, direction, price):
     for i in range(GRID_ORDERS):
         offset_pct = GRID_STEP_PCT * (i - GRID_ORDERS // 2)
         entry = price * (1 + offset_pct)
-        tp = entry + (GRID_STEP_PCT * price) if direction == "long" else entry - (GRID_STEP_PCT * price)
+        tp = entry + (TP_FACTOR * GRID_STEP_PCT * price) if direction == "long" else entry - (TP_FACTOR * GRID_STEP_PCT * price)
         if direction == "long" and tp <= entry:
-            tp = entry + GRID_STEP_PCT * price
+            tp = entry + TP_FACTOR * GRID_STEP_PCT * price
         if direction == "short" and tp >= entry:
-            tp = entry - GRID_STEP_PCT * price
+            tp = entry - TP_FACTOR * GRID_STEP_PCT * price
 
         levels.append({
             "level": i + 1,
@@ -199,9 +200,9 @@ def recenter_grid(grid, current_price):
         offset_pct = GRID_STEP_PCT * (lvl["level"] - GRID_ORDERS // 2)
         new_entry = current_price * (1 + offset_pct)
         if grid["direction"] == "long":
-            new_tp = new_entry + GRID_STEP_PCT * current_price
+            new_tp = new_entry + TP_FACTOR * GRID_STEP_PCT * current_price
         else:
-            new_tp = new_entry - GRID_STEP_PCT * current_price
+            new_tp = new_entry - TP_FACTOR * GRID_STEP_PCT * current_price
 
         lvl["entry"] = round(new_entry, 8)
         lvl["tp"] = round(new_tp, 8)
@@ -270,7 +271,7 @@ def check_grids():
             if lvl.get("filled") and not lvl.get("tp_hit") and not lvl.get("sl_hit"):
                 # NO STOP LOSS — hold filled levels until they take profit.
                 # Trade logic: never cut a position; only exit at profit.
-                tp_threshold = GRID_STEP_PCT * 0.9
+                tp_threshold = TP_FACTOR * GRID_STEP_PCT * 0.9
 
                 hit = None
                 if direction == "long":
