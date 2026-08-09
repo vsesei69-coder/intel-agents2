@@ -578,6 +578,16 @@ def check_protections():
     history = load_history()
     trades = [t for t in history.get("trades", []) if t.get("pnl") is not None]
 
+    # Honor an active global lock FIRST, so the pause actually expires instead
+    # of being re-armed every cycle while losing trades stay in the window.
+    gu = state.get("global_until")
+    if gu:
+        try:
+            if datetime.fromisoformat(gu.replace("Z", "+00:00")) > now:
+                return False, f"global lock until {gu}"
+        except Exception:
+            pass
+
     window_start = now - timedelta(hours=SL_WINDOW_H)
     window_trades = []
     for t in trades:
@@ -604,15 +614,6 @@ def check_protections():
         save_protection(state)
         return False, (f"max_drawdown: realized {realized:+.2f} < -{DD_LIMIT} "
                        f"in {SL_WINDOW_H:.0f}h, pausing {DD_PAUSE_MIN:.0f}min")
-
-    # Honor an active global lock.
-    gu = state.get("global_until")
-    if gu:
-        try:
-            if datetime.fromisoformat(gu.replace("Z", "+00:00")) > now:
-                return False, f"global lock until {gu}"
-        except Exception:
-            pass
 
     # Per-pair low-profit lock.
     lp_start = now - timedelta(hours=LOWPROF_WINDOW_H)
