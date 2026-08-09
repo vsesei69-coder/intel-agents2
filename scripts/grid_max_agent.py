@@ -248,9 +248,9 @@ def check_grids():
                         break
 
             if lvl.get("filled") and not lvl.get("tp_hit") and not lvl.get("sl_hit"):
-                # TP hit: price touched full grid step in profit direction
+                # NO STOP LOSS — hold filled levels until they take profit.
+                # Trade logic: never cut a position; only exit at profit.
                 tp_threshold = GRID_STEP_PCT * 0.9
-                sl_threshold = MARGIN_SL_PCT / MAX_LEVERAGE
 
                 hit = None
                 if direction == "long":
@@ -259,37 +259,19 @@ def check_grids():
                         if pnl >= tp_threshold:
                             hit = ("tp", c["h"])
                             break
-                    if not hit:
-                        for c in klines:
-                            pnl = (c["l"] - lvl["fill_price"]) / lvl["fill_price"]
-                            if pnl <= -sl_threshold:
-                                hit = ("sl", c["l"])
-                                break
                 else:
                     for c in klines:
                         pnl = (lvl["fill_price"] - c["l"]) / lvl["fill_price"]
                         if pnl >= tp_threshold:
                             hit = ("tp", c["l"])
                             break
-                    if not hit:
-                        for c in klines:
-                            pnl = (lvl["fill_price"] - c["h"]) / lvl["fill_price"]
-                            if pnl <= -sl_threshold:
-                                hit = ("sl", c["h"])
-                                break
 
                 if hit:
                     kind, exit_price = hit
-                    if kind == "tp":
-                        lvl["tp_hit"] = True
-                        exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
-                        pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
-                            else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
-                    else:
-                        lvl["sl_hit"] = True
-                        exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
-                        pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
-                            else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
+                    lvl["tp_hit"] = True
+                    exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
+                    pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
+                        else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
 
                     lvl["exit_price"] = round(exit_slip, 8)
                     lvl["exit_time"] = now_utc.isoformat()
@@ -302,13 +284,13 @@ def check_grids():
                     lvl["pnl_usd"] = round(net, 2)
                     updated = True
 
-        all_levels_done = all(
-            l.get("tp_hit") or l.get("sl_hit")
-            for l in grid["levels"]
-        )
-        filled_any = any(l.get("filled") for l in grid["levels"])
+        # Grid is considered done when every FILLED level has exited.
+        # Unfilled levels (price never reached them) don't block the grid.
+        filled = [l for l in grid["levels"] if l.get("filled")]
+        done = [l for l in grid["levels"] if l.get("tp_hit") or l.get("sl_hit")]
+        filled_done = [l for l in filled if l.get("tp_hit") or l.get("sl_hit")]
 
-        if filled_any and all_levels_done:
+        if filled and len(filled_done) == len(filled):
             grid["status"] = "closed"
             grid["closed_at"] = now_utc.isoformat()
             updated = True
