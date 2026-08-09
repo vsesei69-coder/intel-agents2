@@ -45,6 +45,12 @@ TP_FACTOR = float(os.environ.get("TP_FACTOR", "1.5"))
 MARGIN_SL_PCT = 0.60
 RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 
+# Time-exit: a filled level that has NOT hit its TP after MAX_HOLD_H hours is
+# force-closed at market. Without stops, a trend move can push price far from
+# the tiny scalp TP and pin levels forever (blocking grid slots). This is not
+# a stop-loss — it bounds how long a scalp position may live. Default 6h.
+MAX_HOLD_H = float(os.environ.get("MAX_HOLD_H", "6.0"))
+
 # Trend filter for mean-reversion entries: skip strong-trend continuation.
 # MAX_TREND_CHANGE: |24h change| above this -> strong trend, no counter-entry.
 # MOMENTUM_PCT: 30m move in the impulse direction above this -> still trending.
@@ -327,15 +333,43 @@ def check_grids():
                     opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
                     hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
                     costs = compute_costs(lvl["size_usd"], hours)
+
                     net = gross - costs["fee"] - costs["slip"] - costs["fund"]
                     lvl["pnl_usd"] = round(net, 2)
                     updated = True
+                    continue
+
+                # Time-exit: filled level held too long without hitting TP.
+                # Force-close at market so scalp grids never pin slots forever.
+                fill_t = lvl.get("fill_time")
+                if fill_t:
+                    try:
+                        ft = datetime.fromisoformat(fill_t.replace("Z", "+00:00"))
+                        held_h = (now_utc - ft).total_seconds() / 3600
+                    except Exception:
+                        held_h = 0
+                    if held_h >= MAX_HOLD_H:
+                        exit_price = current_price
+                        exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
+                        pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
+                            else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
+                        lvl["tp_hit"] = False
+                        lvl["sl_hit"] = False
+                        lvl["time_exit"] = True
+                        lvl["exit_price"] = round(exit_slip, 8)
+                        lvl["exit_time"] = now_utc.isoformat()
+                        gross = lvl["size_usd"] * pnl_pct
+                        hours = held_h
+                        costs = compute_costs(lvl["size_usd"], hours)
+                        net = gross - costs["fee"] - costs["slip"] - costs["fund"]
+                        lvl["pnl_usd"] = round(net, 2)
+                        updated = True
 
         # Grid is considered done when every FILLED level has exited.
         # Unfilled levels (price never reached them) don't block the grid.
         filled = [l for l in grid["levels"] if l.get("filled")]
-        done = [l for l in grid["levels"] if l.get("tp_hit") or l.get("sl_hit")]
-        filled_done = [l for l in filled if l.get("tp_hit") or l.get("sl_hit")]
+        done = [l for l in grid["levels"] if l.get("tp_hit") or l.get("sl_hit") or l.get("time_exit")]
+        filled_done = [l for l in filled if l.get("tp_hit") or l.get("sl_hit") or l.get("time_exit")]
 
         if filled and len(filled_done) == len(filled):
             grid["status"] = "closed"
