@@ -35,7 +35,7 @@ BANKROLL = 1000.0
 BALANCE_PER_GRID = 0.03
 MAX_LEVERAGE = 50
 TAKER_FEE = 0.0004
-SLIPPAGE = 0.001
+SLIPPAGE = 0.0003
 FUNDING_RATE = 0.0001
 
 GRID_RANGE_PCT = float(os.environ.get("GRID_RANGE", "0.03"))
@@ -219,46 +219,77 @@ def check_grids():
             recenter_grid(grid, current_price)
             updated = True
 
+        # Fetch 1m candles since last check to catch intra-candle touches
+        klines = fetch_klines_range(symbol, last_check, now_utc, "1m", 500)
+        if not klines:
+            # fallback: single synthetic candle from current price
+            klines = [{"h": current_price, "l": current_price,
+                       "t": now_utc, "c": current_price}]
+
         for lvl in grid["levels"]:
             if lvl.get("tp_hit") or lvl.get("sl_hit"):
                 continue
 
             if not lvl.get("filled"):
-                if direction == "long" and current_price <= lvl["entry"]:
-                    lvl["filled"] = True
-                    lvl["fill_price"] = lvl["entry"]
-                    lvl["fill_time"] = now_utc.isoformat()
-                    updated = True
-                elif direction == "short" and current_price >= lvl["entry"]:
-                    lvl["filled"] = True
-                    lvl["fill_price"] = lvl["entry"]
-                    lvl["fill_time"] = now_utc.isoformat()
-                    updated = True
+                for c in klines:
+                    if direction == "long" and c["l"] <= lvl["entry"]:
+                        lvl["filled"] = True
+                        lvl["fill_price"] = lvl["entry"]
+                        lvl["fill_time"] = now_utc.isoformat()
+                        updated = True
+                        break
+                    elif direction == "short" and c["h"] >= lvl["entry"]:
+                        lvl["filled"] = True
+                        lvl["fill_price"] = lvl["entry"]
+                        lvl["fill_time"] = now_utc.isoformat()
+                        updated = True
+                        break
 
             if lvl.get("filled") and not lvl.get("tp_hit") and not lvl.get("sl_hit"):
+                # TP hit: price touched full grid step in profit direction
+                tp_threshold = GRID_STEP_PCT * 0.9
+                sl_threshold = MARGIN_SL_PCT / MAX_LEVERAGE
+
+                hit = None
                 if direction == "long":
-                    pnl_pct = (current_price - lvl["fill_price"]) / lvl["fill_price"]
+                    for c in klines:
+                        pnl = (c["h"] - lvl["fill_price"]) / lvl["fill_price"]
+                        if pnl >= tp_threshold:
+                            hit = ("tp", c["h"])
+                            break
+                    if not hit:
+                        for c in klines:
+                            pnl = (c["l"] - lvl["fill_price"]) / lvl["fill_price"]
+                            if pnl <= -sl_threshold:
+                                hit = ("sl", c["l"])
+                                break
                 else:
-                    pnl_pct = (lvl["fill_price"] - current_price) / lvl["fill_price"]
+                    for c in klines:
+                        pnl = (lvl["fill_price"] - c["l"]) / lvl["fill_price"]
+                        if pnl >= tp_threshold:
+                            hit = ("tp", c["l"])
+                            break
+                    if not hit:
+                        for c in klines:
+                            pnl = (lvl["fill_price"] - c["h"]) / lvl["fill_price"]
+                            if pnl <= -sl_threshold:
+                                hit = ("sl", c["h"])
+                                break
 
-                margin_loss_pct = pnl_pct * MAX_LEVERAGE
+                if hit:
+                    kind, exit_price = hit
+                    if kind == "tp":
+                        lvl["tp_hit"] = True
+                        exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
+                        pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
+                            else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
+                    else:
+                        lvl["sl_hit"] = True
+                        exit_slip = exit_price * (1 - SLIPPAGE) if direction == "long" else exit_price * (1 + SLIPPAGE)
+                        pnl_pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
+                            else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
 
-                if pnl_pct >= GRID_STEP_PCT * 0.5:
-                    lvl["tp_hit"] = True
-                    lvl["exit_price"] = round(current_price, 8)
-                    lvl["exit_time"] = now_utc.isoformat()
-
-                    gross = lvl["size_usd"] * pnl_pct
-                    opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
-                    hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
-                    costs = compute_costs(lvl["size_usd"], hours)
-                    net = gross - costs["fee"] - costs["slip"] - costs["fund"]
-                    lvl["pnl_usd"] = round(net, 2)
-                    updated = True
-
-                elif margin_loss_pct >= -MARGIN_SL_PCT:
-                    lvl["sl_hit"] = True
-                    lvl["exit_price"] = round(current_price, 8)
+                    lvl["exit_price"] = round(exit_slip, 8)
                     lvl["exit_time"] = now_utc.isoformat()
 
                     gross = lvl["size_usd"] * pnl_pct
@@ -490,7 +521,7 @@ def main():
     try:
         while running:
             run_cycle()
-            time.sleep(45)
+            time.sleep(20)
     except KeyboardInterrupt:
         pass
 
