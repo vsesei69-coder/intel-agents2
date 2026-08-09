@@ -41,7 +41,8 @@ FUNDING_RATE = 0.0001
 PAIRS = [
     "BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "AVAXUSDT",
     "LINKUSDT", "DOTUSDT", "UNIUSDT", "ATOMUSDT", "ARBUSDT",
-    "OPUSDT", "NEARUSDT",
+    "OPUSDT", "NEARUSDT", "XRPUSDT", "LTCUSDT", "TRXUSDT",
+    "ETCUSDT", "ALGOUSDT", "XLMUSDT", "VETUSDT", "HBARUSDT",
 ]
 
 
@@ -485,10 +486,12 @@ def run_cycle():
 
     print(f"\n  Scanning for sleeping markets...")
     try:
-        from vol_monitor import get_top_volatile_pairs
-        scan_pairs = get_top_volatile_pairs(10)
+        from vol_monitor import get_calm_pairs
+        scan_pairs = get_calm_pairs(12)
+        if not scan_pairs:
+            scan_pairs = PAIRS[:12]
     except Exception:
-        scan_pairs = PAIRS[:10]
+        scan_pairs = PAIRS[:12]
     signals = []
     for sym in scan_pairs:
         time.sleep(0.4)

@@ -243,6 +243,17 @@ def get_safe_volatile_pairs(count=12):
     return [sym for sym, _ in safe[:count]]
 
 
+def get_calm_pairs(count=12):
+    """Return LEAST volatile pairs that are safe to trade (no spike/danger).
+    For corridor/sleeping-market strategies that need tight low-vol ranges."""
+    state = get_vol_state()
+    pairs = state.get("pairs", {})
+    calm = [(sym, data) for sym, data in pairs.items()
+            if not data.get("spike") and not data.get("danger")]
+    calm.sort(key=lambda x: x[1].get("atr_pct", 0))
+    return [sym for sym, _ in calm[:count]]
+
+
 def get_orderbook_imbalance(symbol):
     """Get order book depth imbalance: +1 = all bids, -1 = all asks.
     Positive = bullish pressure, negative = bearish."""
