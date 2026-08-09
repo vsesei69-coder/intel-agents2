@@ -51,6 +51,14 @@ RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 MAX_TREND_CHANGE = float(os.environ.get("MAX_TREND_CHANGE", "8.0"))
 MOMENTUM_PCT = float(os.environ.get("MOMENTUM_PCT", "0.25"))
 
+# Bandtastic-style mean-reversion filter: enter long only when price sits in
+# the lower part of the 15m Bollinger band (and RSI is low), short only in the
+# upper part. Works with the no-stop grid: buying at support, not mid-air.
+BB_FILTER = os.environ.get("BB_FILTER", "1") == "1"
+BB_MAX_POS = float(os.environ.get("BB_MAX_POS", "0.55"))
+BB_RSI_HIGH = float(os.environ.get("BB_RSI_HIGH", "60"))   # long needs RSI below
+BB_RSI_LOW = float(os.environ.get("BB_RSI_LOW", "45"))     # short needs RSI above
+
 # Freqtrade-style protections (ported). Global pause after repeated losses or
 # a realized drawdown; per-pair lock for pairs that keep losing.
 PROTECT_FILE = JOURNAL_DIR / "protection_state.json"
@@ -401,6 +409,81 @@ def trend_filter_ok(symbol, change_pct):
     return True, f"impulse fading ({move_30m:+.2f}%/30m), ok"
 
 
+def _sma(closes, n):
+    return sum(closes[-n:]) / n if len(closes) >= n else (sum(closes) / len(closes) if closes else 0.0)
+
+
+def _stdev(closes, n):
+    if len(closes) < n:
+        return 0.0
+    window = closes[-n:]
+    mean = sum(window) / n
+    return (sum((c - mean) ** 2 for c in window) / n) ** 0.5
+
+
+def _rsi(closes, period=14):
+    if len(closes) < period + 1:
+        return 50.0
+    gains, losses = [], []
+    for i in range(1, len(closes)):
+        d = closes[i] - closes[i - 1]
+        gains.append(d if d > 0 else 0.0)
+        losses.append(-d if d < 0 else 0.0)
+    ag = sum(gains[-period:]) / period
+    al = sum(losses[-period:]) / period
+    if al == 0:
+        return 100.0
+    rs = ag / al
+    return 100.0 - 100.0 / (1.0 + rs)
+
+
+def bb_filter_ok(symbol, direction):
+    """Bandtastic-style Bollinger filter (15m, period 20, 2 sigma).
+
+    long:  price near/inside lower band zone (pos <= BB_MAX_POS) and RSI low.
+    short: price near/inside upper band zone (pos >= 1 - BB_MAX_POS) and RSI high.
+    Returns (ok, reason)."""
+    if not BB_FILTER:
+        return True, "bb filter off"
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(hours=6)
+    kl = fetch_klines_range(symbol, start, end, "15m", 40)
+    closes = [c["c"] for c in kl]
+    if len(closes) < 20:
+        return True, "no bb data, allow"
+
+    mid = _sma(closes, 20)
+    sd = _stdev(closes, 20)
+    rng = 4.0 * sd
+    if rng <= 0:
+        return True, f"flat band (sd={sd:.8f}), allow"
+
+    ticker = fetch_ticker(symbol)
+    if not ticker:
+        return True, "no ticker, allow"
+    px = ticker["price"]
+    pos = (px - (mid - 2 * sd)) / rng  # 0 = lower band, 1 = upper band
+    rsi = _rsi(closes, 14)
+
+    if direction == "long":
+        if pos > BB_MAX_POS:
+            return False, (f"bb reject long: price at {pos:.2f} of band "
+                           f"(>{BB_MAX_POS}), rsi={rsi:.0f} - not at support")
+        if rsi > BB_RSI_HIGH:
+            return False, (f"bb reject long: rsi={rsi:.0f} > {BB_RSI_HIGH:.0f}, "
+                           f"not oversold (pos={pos:.2f})")
+        return True, f"bb ok long (pos={pos:.2f}, rsi={rsi:.0f})"
+    else:
+        if pos < 1 - BB_MAX_POS:
+            return False, (f"bb reject short: price at {pos:.2f} of band "
+                           f"(< {1 - BB_MAX_POS:.2f}), rsi={rsi:.0f} - not at resistance")
+        if rsi < BB_RSI_LOW:
+            return False, (f"bb reject short: rsi={rsi:.0f} < {BB_RSI_LOW:.0f}, "
+                           f"not overbought (pos={pos:.2f})")
+        return True, f"bb ok short (pos={pos:.2f}, rsi={rsi:.0f})"
+
+
 def load_protection():
     if PROTECT_FILE.exists():
         try:
@@ -571,6 +654,12 @@ def run_cycle():
             print(f"  [{best['symbol']}] skip: {reason}")
         else:
             print(f"  [{best['symbol']}] {reason}")
+
+            bb_ok, bb_reason = bb_filter_ok(best["symbol"], direction)
+            if not bb_ok:
+                print(f"  [{best['symbol']} {direction.upper()}] skip: {bb_reason}")
+                return
+            print(f"  [{best['symbol']} {direction.upper()}] {bb_reason}")
 
             # Skip if this pair already has an open grid (guards against
             # duplicate agents opening the same pair twice)
