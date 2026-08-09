@@ -85,10 +85,30 @@ def fetch_klines_range(symbol, start_time, end_time, interval="1m", limit=1000):
         return []
 
 
+def _grid_center_from_levels(grid):
+    """Recover grid center from its level entries (legacy grids pre-center_price)."""
+    entries = [l["entry"] for l in grid.get("levels", []) if l.get("entry")]
+    if not entries:
+        return None
+    entries.sort()
+    n = len(entries)
+    return entries[n // 2] if n % 2 else (entries[n // 2 - 1] + entries[n // 2]) / 2
+
+
 def load_grids():
     if GRIDS_FILE.exists():
         try:
-            return json.loads(GRIDS_FILE.read_text())
+            grids = json.loads(GRIDS_FILE.read_text())
+            changed = False
+            for g in grids:
+                if g.get("status") == "open" and not g.get("center_price"):
+                    c = _grid_center_from_levels(g)
+                    if c:
+                        g["center_price"] = round(c, 8)
+                        changed = True
+            if changed:
+                save_grids(grids)
+            return grids
         except Exception:
             return []
     return []
@@ -202,7 +222,7 @@ def check_grids():
 
         symbol = grid["symbol"]
         direction = grid["direction"]
-        center = grid["center_price"]
+        center = grid.get("center_price") or 0.0
         last_check_str = grid.get("last_checked_at", grid["opened_at"])
         last_check = datetime.fromisoformat(last_check_str.replace("Z", "+00:00"))
 
@@ -467,7 +487,7 @@ def dedupe_grids():
         if key in seen:
             now_utc = datetime.now(timezone.utc)
             ticker = fetch_ticker(g["symbol"])
-            px = ticker["price"] if ticker else g["center_price"]
+            px = ticker["price"] if ticker else g.get("center_price") or 0.0
             total = 0.0
             for lvl in g["levels"]:
                 if lvl.get("tp_hit") or lvl.get("sl_hit") or not lvl.get("filled"):
@@ -529,7 +549,7 @@ def migrate_bias():
         # Close opposing grid at current price, book PnL
         now_utc = datetime.now(timezone.utc)
         ticker = fetch_ticker(g["symbol"])
-        px = ticker["price"] if ticker else g["center_price"]
+        px = ticker["price"] if ticker else g.get("center_price") or 0.0
         total = 0.0
         for lvl in g["levels"]:
             if lvl.get("tp_hit") or lvl.get("sl_hit") or not lvl.get("filled"):
