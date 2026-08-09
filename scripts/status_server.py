@@ -174,6 +174,19 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 body = p.read_bytes()
                 self._send(200, body, "application/json")
+            elif self.path.startswith("/log/"):
+                name = self.path[len("/log/"):]
+                if name == "supervisor":
+                    p = BASE / "logs" / "agent_supervisor.log"
+                elif name == "operator":
+                    p = BASE / "logs" / "operator.jsonl"
+                else:
+                    p = BASE / "logs" / f"{name}.log"
+                if not p.exists():
+                    self._send(404, b'{"error":"no log"}')
+                    return
+                body = p.read_bytes()[-8000:]
+                self._send(200, body, "text/plain; charset=utf-8")
             elif self.path.startswith("/rawopen/"):
                 name = self.path[len("/rawopen/"):]
                 jdir = JOURNALS.get(name)
