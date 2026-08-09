@@ -527,9 +527,10 @@ def run_cycle():
         if any(g["symbol"] == sig["symbol"] and g["status"] == "open" for g in active):
             continue
         try:
-            from regime_detector import check_direction_allowed
-            ok, msg = check_direction_allowed("neutral", "corridor")
-            if not ok:
+            from regime_detector import get_current_regime
+            rd = get_current_regime()
+            advice = rd.get("agent_advice", {}).get("corridor", {})
+            if not advice.get("active", True):
                 continue
         except Exception:
             pass
