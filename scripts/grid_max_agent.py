@@ -15,7 +15,7 @@ Journal: trading_journal_{instance}/
 """
 
 import hashlib, json, os, signal, sys, time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 
@@ -219,8 +219,10 @@ def check_grids():
             recenter_grid(grid, current_price)
             updated = True
 
-        # Fetch 1m candles since last check to catch intra-candle touches
-        klines = fetch_klines_range(symbol, last_check, now_utc, "1m", 500)
+        # Fetch last N minutes of 1m candles (Binance only returns closed candles,
+        # so always look back a window regardless of last_check)
+        lookback = now_utc - timedelta(minutes=6)
+        klines = fetch_klines_range(symbol, lookback, now_utc, "1m", 500)
         if not klines:
             # fallback: single synthetic candle from current price
             klines = [{"h": current_price, "l": current_price,
@@ -391,11 +393,6 @@ def run_cycle():
         change = abs(ticker["change"])
         price = ticker["price"]
         score = change
-
-        if FLOAT_BIAS == "long" and ticker["change"] >= 0:
-            continue
-        if FLOAT_BIAS == "short" and ticker["change"] <= 0:
-            continue
 
         if score > best_score:
             best_score = score
