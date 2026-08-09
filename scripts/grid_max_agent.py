@@ -45,6 +45,12 @@ TP_FACTOR = float(os.environ.get("TP_FACTOR", "1.5"))
 MARGIN_SL_PCT = 0.60
 RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 
+# Trend filter for mean-reversion entries: skip strong-trend continuation.
+# MAX_TREND_CHANGE: |24h change| above this -> strong trend, no counter-entry.
+# MOMENTUM_PCT: 30m move in the impulse direction above this -> still trending.
+MAX_TREND_CHANGE = float(os.environ.get("MAX_TREND_CHANGE", "8.0"))
+MOMENTUM_PCT = float(os.environ.get("MOMENTUM_PCT", "0.25"))
+
 VOLATILE_PAIRS = [
     "DOGEUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FLOKIUSDT",
     "SUIUSDT", "SEIUSDT", "TIAUSDT", "INJUSDT", "TONUSDT",
@@ -356,6 +362,33 @@ def check_grids():
     return grids
 
 
+def trend_filter_ok(symbol, change_pct):
+    """Mean-reversion guard: skip if we'd be fading a strong trend.
+
+    1. |24h change| > MAX_TREND_CHANGE  -> strong trend, no counter entry.
+    2. 30m momentum still pushing in the impulse direction -> trend continues,
+       skip; only enter when the impulse has started to fade/reverse.
+    Returns (ok, reason)."""
+    if abs(change_pct) > MAX_TREND_CHANGE:
+        return False, f"24h trend {change_pct:+.2f}% too strong (>{MAX_TREND_CHANGE}%)"
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=40)
+    kl = fetch_klines_range(symbol, start, end, "1m", 100)
+    if not kl:
+        return True, "no klines, allow"
+
+    first_close = kl[0]["c"]
+    last_close = kl[-1]["c"]
+    move_30m = (last_close - first_close) / first_close * 100 if first_close else 0
+
+    if change_pct < 0 and move_30m < -MOMENTUM_PCT:
+        return False, f"still falling ({move_30m:+.2f}%/30m), trend continues"
+    if change_pct > 0 and move_30m > MOMENTUM_PCT:
+        return False, f"still rising ({move_30m:+.2f}%/30m), trend continues"
+    return True, f"impulse fading ({move_30m:+.2f}%/30m), ok"
+
+
 def run_cycle():
     print(f"\n{'='*60}")
     print(f"  FLOAT GRID [{INSTANCE}] — {datetime.now().strftime('%H:%M:%S')} UTC")
@@ -402,28 +435,32 @@ def run_cycle():
             best = {"symbol": sym, "price": price, "change": ticker["change"]}
 
     if best:
-        if FLOAT_BIAS == "long":
-            direction = "long"
-        elif FLOAT_BIAS == "short":
-            direction = "short"
-        else:
-            direction = "long" if best["change"] < 0 else "short"
+        # Mean-reversion: always enter AGAINST the impulse.
+        # (bias no longer forces a fixed direction — both float-agents flip
+        # with the market like the main instance.)
+        direction = "long" if best["change"] < 0 else "short"
 
-        # Skip if this pair already has an open grid (guards against
-        # duplicate agents opening the same pair twice)
-        active_grids = load_grids()
-        already = any(
-            g["symbol"] == best["symbol"] and g["status"] == "open"
-            for g in active_grids
-        )
-        if already:
-            print(f"  [{best['symbol']} {direction.upper()}] already open, skipping")
+        ok, reason = trend_filter_ok(best["symbol"], best["change"])
+        if not ok:
+            print(f"  [{best['symbol']}] skip: {reason}")
         else:
-            grid = create_grid(best["symbol"], direction, best["price"])
-            print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
-            print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
-            print(f"    Grid: {GRID_ORDERS} orders | Step: {GRID_STEP_PCT*100:.3f}% | "
-                  f"Range: ±{GRID_RANGE_PCT*50:.1f}%")
+            print(f"  [{best['symbol']}] {reason}")
+
+            # Skip if this pair already has an open grid (guards against
+            # duplicate agents opening the same pair twice)
+            active_grids = load_grids()
+            already = any(
+                g["symbol"] == best["symbol"] and g["status"] == "open"
+                for g in active_grids
+            )
+            if already:
+                print(f"  [{best['symbol']} {direction.upper()}] already open, skipping")
+            else:
+                grid = create_grid(best["symbol"], direction, best["price"])
+                print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
+                print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
+                print(f"    Grid: {GRID_ORDERS} orders | Step: {GRID_STEP_PCT*100:.3f}% | "
+                      f"Range: ±{GRID_RANGE_PCT*50:.1f}%")
     else:
         print(f"  No candidates found.")
 
