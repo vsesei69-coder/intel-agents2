@@ -24,11 +24,16 @@ done
 FLOAT_INSTANCE=max nohup python scripts/grid_max_agent.py > logs/max_grid.log 2>&1 &
 echo "[bootstrap]  max_grid (instance=max) pid=$!"
 
-FLOAT_INSTANCE=max2 FLOAT_BIAS=long nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
-echo "[bootstrap]  max_grid2 (instance=max2, bias=long) pid=$!"
+# Scalp grid: narrow range, many levels, small frequent TPs, 50x, bigger margin.
+FLOAT_INSTANCE=max2 GRID_RANGE=0.015 GRID_ORDERS=61 TP_FACTOR=2.0 \
+  BALANCE_PER_GRID=0.05 MAX_LEVERAGE=50 \
+  nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
+echo "[bootstrap]  max_grid2 (instance=max2, scalp 1.5%/61ord/TPx2/50x) pid=$!"
 
-FLOAT_INSTANCE=max3 FLOAT_BIAS=short nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
-echo "[bootstrap]  max_grid3 (instance=max3, bias=short) pid=$!"
+FLOAT_INSTANCE=max3 GRID_RANGE=0.025 GRID_ORDERS=61 TP_FACTOR=2.0 \
+  BALANCE_PER_GRID=0.05 MAX_LEVERAGE=50 \
+  nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
+echo "[bootstrap]  max_grid3 (instance=max3, scalp 2.5%/61ord/TPx2/50x) pid=$!"
 
 nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
 echo "[bootstrap]  status_server pid=$!"
