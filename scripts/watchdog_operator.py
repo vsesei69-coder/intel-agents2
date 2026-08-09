@@ -32,17 +32,18 @@ SERVICES = ["intel-agents", "omniroute"]
 JOB = "mythos-inference"
 
 AGENTS = [
-    "agent_monitor", "grid_agent", "grid_max_agent",
+    "grid_agent", "grid_max_agent", "grid_max_agent2", "grid_max_agent3",
     "grid_corridor_agent", "xrp_grid_agent", "stoch_agent", "level_grid_agent",
 ]
 AGENT_PROCESSES = {
-    "agent_monitor": "agent_monitor.py",
-    "grid_agent": "grid_agent.py",
-    "grid_max_agent": "grid_max_agent.py",
-    "grid_corridor_agent": "grid_corridor_agent.py",
-    "xrp_grid_agent": "xrp_grid_agent.py",
-    "stoch_agent": "stoch_agent.py",
-    "level_grid_agent": "level_grid_agent.py",
+    "grid_agent":        ("grid_agent.py",          {}),
+    "grid_max_agent":    ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max"}),
+    "grid_max_agent2":   ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max2", "FLOAT_BIAS": "long"}),
+    "grid_max_agent3":   ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max3", "FLOAT_BIAS": "short"}),
+    "grid_corridor_agent": ("grid_corridor_agent.py", {}),
+    "xrp_grid_agent":    ("xrp_grid_agent.py",      {}),
+    "stoch_agent":       ("stoch_agent.py",         {}),
+    "level_grid_agent":  ("level_grid_agent.py",    {}),
 }
 
 CHECK_INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "60"))
@@ -163,18 +164,32 @@ def procs_running():
         return ""
 
 
-def agent_running(script):
-    return script in procs_running()
+def agent_running(agent, script, env):
+    procs = procs_running()
+    if script not in procs:
+        return False
+    if script != "grid_max_agent.py":
+        return True
+    # For max-instances, distinguish by log file freshness
+    logfile = LOGS / f"{agent}.log"
+    try:
+        age = time.time() - logfile.stat().st_mtime
+    except Exception:
+        age = 9999
+    return age < 240  # agent writes every ~20s; >4min means dead/stuck
 
 
-def restart_agent(agent, script):
+def restart_agent(agent, script, env):
     log_event("agent_restart", {"agent": agent, "script": script})
     try:
+        penv = dict(os.environ)
+        penv.update(env)
         subprocess.Popen(
             [sys.executable, str(BASE / "scripts" / script)],
             stdout=open(LOGS / f"{agent}.log", "ab"),
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=penv,
         )
         return True
     except Exception as e:
@@ -185,7 +200,7 @@ def restart_agent(agent, script):
 def scan_agent_logs():
     """Сканирует хвосты логов агентов на паттерны багов -> фиксы по правилам."""
     issues = []
-    for agent, script in AGENT_PROCESSES.items():
+    for agent, (script, env) in AGENT_PROCESSES.items():
         logfile = LOGS / f"{agent}.log"
         if not logfile.exists():
             continue
@@ -261,10 +276,10 @@ def run_checks(state):
         actions.append(f"{agent}: {problem}")
 
     # 5. Processes
-    for agent, script in AGENT_PROCESSES.items():
-        if not agent_running(script):
+    for agent, (script, env) in AGENT_PROCESSES.items():
+        if not agent_running(agent, script, env):
             log_event("agent_down", {"agent": agent})
-            restart_agent(agent, script)
+            restart_agent(agent, script, env)
             actions.append(f"relaunched {agent}")
 
     # 6. Journal dirs (профилактика FileNotFoundError)
