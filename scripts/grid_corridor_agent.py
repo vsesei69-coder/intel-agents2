@@ -199,14 +199,18 @@ def build_corridor_grid(base_price, support, resistance, total_orders):
     return levels
 
 
-def analyze_symbol(symbol):
+def analyze_symbol(symbol, verbose=True):
     """Check if market is sleeping and corridor is suitable."""
     c_15 = fetch_klines(symbol, "15m", 50)
     if len(c_15) < 30:
+        if verbose:
+            print(f"    {symbol}: <30 candles, skip")
         return None
 
     ticker = fetch_ticker(symbol)
     if not ticker or ticker["price"] < 0.01:
+        if verbose:
+            print(f"    {symbol}: no ticker/price, skip")
         return None
 
     price = ticker["price"]
@@ -215,12 +219,18 @@ def analyze_symbol(symbol):
     bb = bollinger(closes, 20, 2.0)
     r = rsi(closes, 14)
     if not bb:
+        if verbose:
+            print(f"    {symbol}: no bb data, skip")
         return None
 
     # Must be sleeping (low vol, tight range) AND mid-range RSI (35-65)
     if not is_sleeping_market(c_15):
+        if verbose:
+            print(f"    {symbol}: not sleeping (vol/volume), skip")
         return None
     if not (35 <= r <= 65):
+        if verbose:
+            print(f"    {symbol}: RSI {r:.0f} out of 35-65, skip")
         return None
 
     recent = c_15[-30:]
@@ -229,13 +239,19 @@ def analyze_symbol(symbol):
     mid_price = (recent_high + recent_low) / 2
     corridor_width = (recent_high - recent_low) / mid_price
 
-    # Corridor must be 3-5%
-    if corridor_width < CORRIDOR_PCT * 0.6 or corridor_width > CORRIDOR_PCT * 1.4:
+    # Corridor must be a tight channel. Lower bound is LOW: a calm flat pair
+    # with a 0.6-3% channel is EXACTLY what this strategy wants (yesterday it
+    # profited on narrow channels). Only exclude a waking/trending market
+    # (corridor widening beyond ~1.4x) — then we hop to another flat pair.
+    if corridor_width > CORRIDOR_PCT * 1.4:
+        if verbose:
+            print(f"    {symbol}: corridor {corridor_width*100:.2f}% too wide "
+                  f"(>{CORRIDOR_PCT*1.4*100:.1f}%) - waking, skip")
         return None
 
     # Dynamic order count: wider corridor = more orders
-    ratio = (corridor_width - CORRIDOR_PCT * 0.6) / (CORRIDOR_PCT * 0.8)
-    num_orders = max(22, min(33, int(MAX_GRID_ORDERS + ratio * 9)))
+    ratio = min(1.0, corridor_width / CORRIDOR_PCT)
+    num_orders = max(16, min(33, int(MAX_GRID_ORDERS + ratio * 9)))
 
     # Pick best leverage TF
     tf = "15m"
@@ -485,13 +501,16 @@ def run_cycle():
         return
 
     print(f"\n  Scanning for sleeping markets...")
+    scan_pairs = list(PAIRS)
     try:
         from vol_monitor import get_calm_pairs
-        scan_pairs = get_calm_pairs(12)
-        if not scan_pairs:
-            scan_pairs = PAIRS[:12]
+        calm = get_calm_pairs(12) or []
+        for s in calm:
+            if s not in scan_pairs:
+                scan_pairs.append(s)
     except Exception:
-        scan_pairs = PAIRS[:12]
+        pass
+    scan_pairs = scan_pairs[:16]
     signals = []
     for sym in scan_pairs:
         time.sleep(0.4)
