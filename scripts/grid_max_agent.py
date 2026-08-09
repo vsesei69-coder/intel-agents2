@@ -405,11 +405,22 @@ def run_cycle():
             direction = "short"
         else:
             direction = "long" if best["change"] < 0 else "short"
-        grid = create_grid(best["symbol"], direction, best["price"])
-        print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
-        print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
-        print(f"    Grid: {GRID_ORDERS} orders | Step: {GRID_STEP_PCT*100:.3f}% | "
-              f"Range: ±{GRID_RANGE_PCT*50:.1f}%")
+
+        # Skip if this pair already has an open grid (guards against
+        # duplicate agents opening the same pair twice)
+        active_grids = load_grids()
+        already = any(
+            g["symbol"] == best["symbol"] and g["status"] == "open"
+            for g in active_grids
+        )
+        if already:
+            print(f"  [{best['symbol']} {direction.upper()}] already open, skipping")
+        else:
+            grid = create_grid(best["symbol"], direction, best["price"])
+            print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
+            print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
+            print(f"    Grid: {GRID_ORDERS} orders | Step: {GRID_STEP_PCT*100:.3f}% | "
+                  f"Range: ±{GRID_RANGE_PCT*50:.1f}%")
     else:
         print(f"  No candidates found.")
 
