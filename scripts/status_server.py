@@ -90,12 +90,32 @@ def collect_status():
             wr = round(wins / total * 100, 1) if total else 0.0
             open_n = 0
             open_symbols = []
+            level_tp = 0
+            level_sl = 0
+            level_pnl = 0.0
+            filled_total = 0
             if isinstance(openf, list):
-                open_n = sum(1 for p in openf if isinstance(p, dict) and p.get("status") == "open")
-                open_symbols = [p.get("symbol") for p in openf if isinstance(p, dict) and p.get("status") == "open"]
+                for p in openf:
+                    if not isinstance(p, dict) or p.get("status") != "open":
+                        continue
+                    open_n += 1
+                    open_symbols.append(p.get("symbol"))
+                    lvls = p.get("levels")
+                    if isinstance(lvls, list):
+                        for l in lvls:
+                            if isinstance(l, dict) and l.get("filled"):
+                                filled_total += 1
+                                if l.get("tp_hit"):
+                                    level_tp += 1
+                                    level_pnl += l.get("pnl_usd") or 0
+                                elif l.get("sl_hit"):
+                                    level_sl += 1
+                                    level_pnl += l.get("pnl_usd") or 0
             agents[name] = {
                 "pnl": pnl, "trades": total, "wins": wins, "losses": losses,
                 "wr": wr, "open": open_n, "open_symbols": open_symbols,
+                "level_tp": level_tp, "level_sl": level_sl,
+                "level_pnl": round(level_pnl, 2), "filled": filled_total,
             }
         else:
             open_n = len(openf) if isinstance(openf, list) else 0
