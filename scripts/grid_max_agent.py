@@ -57,6 +57,12 @@ MAX_HOLD_H = float(os.environ.get("MAX_HOLD_H", "6.0"))
 MAX_TREND_CHANGE = float(os.environ.get("MAX_TREND_CHANGE", "8.0"))
 MOMENTUM_PCT = float(os.environ.get("MOMENTUM_PCT", "0.25"))
 
+# Above this 24h change the pair is in a trend: play WITH the trend using a
+# grid of pullback orders (long in a rally, short in a dump). Below it the
+# pair is ranging: mean-reversion at band extremes. Rides the trend instead
+# of fading it, which is what pinned the short grids in a rally.
+TREND_FOLLOW_PCT = float(os.environ.get("TREND_FOLLOW_PCT", "3.0"))
+
 # Bandtastic-style mean-reversion filter: enter long only when price sits in
 # the lower part of the 15m Bollinger band (and RSI is low), short only in the
 # upper part. Works with the no-stop grid: buying at support, not mid-air.
@@ -416,25 +422,50 @@ def check_grids():
     return grids
 
 
-def trend_filter_ok(symbol, change_pct):
-    """Mean-reversion guard: skip if we'd be fading a strong trend.
+def decide_mode(change_pct):
+    """Pick entry mode + direction from 24h change.
 
-    1. |24h change| > MAX_TREND_CHANGE  -> strong trend, no counter entry.
-    2. 30m momentum still pushing in the impulse direction -> trend continues,
-       skip; only enter when the impulse has started to fade/reverse.
+    TREND: |change| > TREND_FOLLOW_PCT — play WITH the trend via pullback
+    grid (long in rally, short in dump). RANGE: mean-reversion at extremes.
+    Returns (mode, direction)."""
+    if abs(change_pct) > TREND_FOLLOW_PCT:
+        direction = "long" if change_pct > 0 else "short"
+        return "trend", direction
+    direction = "long" if change_pct < 0 else "short"
+    return "range", direction
+
+
+def trend_filter_ok(symbol, change_pct, mode, direction):
+    """Entry guard by market mode.
+
+    TREND: ride the trend, but don't add against a sharp 30m counter-pulse.
+    RANGE: mean-reversion guard — skip fading a strong trend or momentum that
+    is still pushing (same as before).
     Returns (ok, reason)."""
-    if abs(change_pct) > MAX_TREND_CHANGE:
-        return False, f"24h trend {change_pct:+.2f}% too strong (>{MAX_TREND_CHANGE}%)"
-
     end = datetime.now(timezone.utc)
     start = end - timedelta(minutes=40)
     kl = fetch_klines_range(symbol, start, end, "1m", 100)
+    if kl:
+        first_close = kl[0]["c"]
+        last_close = kl[-1]["c"]
+        move_30m = (last_close - first_close) / first_close * 100 if first_close else 0
+    else:
+        move_30m = 0.0
+
+    if mode == "trend":
+        # Don't fight the trend; skip only a violent counter-pulse (potential
+        # local reversal that would pin pullback orders).
+        if direction == "long" and move_30m < -MOMENTUM_PCT * 3:
+            return False, f"trend long but {move_30m:+.2f}%/30m counter-pulse (trend {change_pct:+.2f}%)"
+        if direction == "short" and move_30m > MOMENTUM_PCT * 3:
+            return False, f"trend short but {move_30m:+.2f}%/30m counter-pulse (trend {change_pct:+.2f}%)"
+        return True, f"trend {direction} (24h {change_pct:+.2f}%), impulse {move_30m:+.2f}%/30m"
+
+    # RANGE mode: mean-reversion.
+    if abs(change_pct) > MAX_TREND_CHANGE:
+        return False, f"24h trend {change_pct:+.2f}% too strong (>{MAX_TREND_CHANGE}%)"
     if not kl:
         return True, "no klines, allow"
-
-    first_close = kl[0]["c"]
-    last_close = kl[-1]["c"]
-    move_30m = (last_close - first_close) / first_close * 100 if first_close else 0
 
     if change_pct < 0 and move_30m < -MOMENTUM_PCT:
         return False, f"still falling ({move_30m:+.2f}%/30m), trend continues"
@@ -471,14 +502,17 @@ def _rsi(closes, period=14):
     return 100.0 - 100.0 / (1.0 + rs)
 
 
-def bb_filter_ok(symbol, direction):
+def bb_filter_ok(symbol, direction, mode="range"):
     """Bandtastic-style Bollinger filter (15m, period 20, 2 sigma).
 
     long:  price near/inside lower band zone (pos <= BB_MAX_POS) and RSI low.
     short: price near/inside upper band zone (pos >= 1 - BB_MAX_POS) and RSI high.
+    In TREND mode the band rides away from price, so the filter is bypassed.
     Returns (ok, reason)."""
     if not BB_FILTER:
         return True, "bb filter off"
+    if mode == "trend":
+        return True, "trend mode, bb bypassed"
 
     end = datetime.now(timezone.utc)
     start = end - timedelta(hours=6)
@@ -678,18 +712,17 @@ def run_cycle():
             best = {"symbol": sym, "price": price, "change": ticker["change"]}
 
     if best:
-        # Mean-reversion: always enter AGAINST the impulse.
-        # (bias no longer forces a fixed direction — both float-agents flip
-        # with the market like the main instance.)
-        direction = "long" if best["change"] < 0 else "short"
+        # Mode-aware: trend = ride the trend with pullback grid; range =
+        # mean-reversion against the impulse at band extremes.
+        mode, direction = decide_mode(best["change"])
 
-        ok, reason = trend_filter_ok(best["symbol"], best["change"])
+        ok, reason = trend_filter_ok(best["symbol"], best["change"], mode, direction)
         if not ok:
             print(f"  [{best['symbol']}] skip: {reason}")
         else:
-            print(f"  [{best['symbol']}] {reason}")
+            print(f"  [{best['symbol']} {mode.upper()}] {reason}")
 
-            bb_ok, bb_reason = bb_filter_ok(best["symbol"], direction)
+            bb_ok, bb_reason = bb_filter_ok(best["symbol"], direction, mode)
             if not bb_ok:
                 print(f"  [{best['symbol']} {direction.upper()}] skip: {bb_reason}")
                 return
