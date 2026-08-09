@@ -51,6 +51,18 @@ RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 MAX_TREND_CHANGE = float(os.environ.get("MAX_TREND_CHANGE", "8.0"))
 MOMENTUM_PCT = float(os.environ.get("MOMENTUM_PCT", "0.25"))
 
+# Freqtrade-style protections (ported). Global pause after repeated losses or
+# a realized drawdown; per-pair lock for pairs that keep losing.
+PROTECT_FILE = JOURNAL_DIR / "protection_state.json"
+SL_WINDOW_H = float(os.environ.get("PROTECT_SL_WINDOW_H", "6"))
+SL_LIMIT = int(os.environ.get("PROTECT_SL_LIMIT", "3"))
+SL_PAUSE_MIN = float(os.environ.get("PROTECT_SL_PAUSE_MIN", "180"))
+DD_LIMIT = float(os.environ.get("PROTECT_DD_LIMIT", "40"))
+DD_PAUSE_MIN = float(os.environ.get("PROTECT_DD_PAUSE_MIN", "360"))
+LOWPROF_WINDOW_H = float(os.environ.get("PROTECT_LOWPROF_WINDOW_H", "24"))
+LOWPROF_REQUIRED = float(os.environ.get("PROTECT_LOWPROF_REQUIRED", "0"))
+LOWPROF_PAUSE_MIN = float(os.environ.get("PROTECT_LOWPROF_PAUSE_MIN", "1440"))
+
 VOLATILE_PAIRS = [
     "DOGEUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FLOKIUSDT",
     "SUIUSDT", "SEIUSDT", "TIAUSDT", "INJUSDT", "TONUSDT",
@@ -389,6 +401,112 @@ def trend_filter_ok(symbol, change_pct):
     return True, f"impulse fading ({move_30m:+.2f}%/30m), ok"
 
 
+def load_protection():
+    if PROTECT_FILE.exists():
+        try:
+            return json.loads(PROTECT_FILE.read_text())
+        except Exception:
+            return {}
+    return {}
+
+
+def save_protection(state):
+    PROTECT_FILE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+
+
+def check_protections():
+    """Freqtrade-style guards. Returns (ok, reason).
+
+    Global: pause opening new grids after SL_LIMIT losing grid-closes within
+    SL_WINDOW_H hours, or when realized drawdown within the window exceeds
+    DD_LIMIT USD. Per-pair: lock a pair whose recent grid-closes netted below
+    LOWPROF_REQUIRED within LOWPROF_WINDOW_H hours.
+    """
+    state = load_protection()
+    now = datetime.now(timezone.utc)
+    history = load_history()
+    trades = [t for t in history.get("trades", []) if t.get("pnl") is not None]
+
+    window_start = now - timedelta(hours=SL_WINDOW_H)
+    window_trades = []
+    for t in trades:
+        closed = t.get("closed") or t.get("closed_at") or ""
+        try:
+            dt = datetime.fromisoformat(closed.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt >= window_start:
+            window_trades.append(t)
+
+    # Global stop-loss guard: too many losing closes recently.
+    losses = [t for t in window_trades if t["pnl"] < 0]
+    if len(losses) >= SL_LIMIT:
+        state["global_until"] = (now + timedelta(minutes=SL_PAUSE_MIN)).isoformat()
+        save_protection(state)
+        return False, (f"stoploss_guard: {len(losses)} losing closes "
+                       f"in {SL_WINDOW_H:.0f}h (>= {SL_LIMIT}), pausing {SL_PAUSE_MIN:.0f}min")
+
+    # Global max-drawdown guard: realized drawdown beyond limit.
+    realized = sum(t["pnl"] for t in window_trades)
+    if realized < -DD_LIMIT:
+        state["global_until"] = (now + timedelta(minutes=DD_PAUSE_MIN)).isoformat()
+        save_protection(state)
+        return False, (f"max_drawdown: realized {realized:+.2f} < -{DD_LIMIT} "
+                       f"in {SL_WINDOW_H:.0f}h, pausing {DD_PAUSE_MIN:.0f}min")
+
+    # Honor an active global lock.
+    gu = state.get("global_until")
+    if gu:
+        try:
+            if datetime.fromisoformat(gu.replace("Z", "+00:00")) > now:
+                return False, f"global lock until {gu}"
+        except Exception:
+            pass
+
+    # Per-pair low-profit lock.
+    lp_start = now - timedelta(hours=LOWPROF_WINDOW_H)
+    lp_trades = []
+    for t in trades:
+        closed = t.get("closed") or t.get("closed_at") or ""
+        try:
+            dt = datetime.fromisoformat(closed.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt >= lp_start:
+            lp_trades.append(t)
+
+    pair_pnl = {}
+    for t in lp_trades:
+        pair_pnl[t["symbol"]] = pair_pnl.get(t["symbol"], 0.0) + t["pnl"]
+    locked_pairs = []
+    for sym, pnl in pair_pnl.items():
+        if pnl < LOWPROF_REQUIRED:
+            state.setdefault("pair_locks", {})[sym] = (now + timedelta(minutes=LOWPROF_PAUSE_MIN)).isoformat()
+            locked_pairs.append(sym)
+    # Prune expired pair locks.
+    pair_locks = state.get("pair_locks", {})
+    for sym in [s for s, u in pair_locks.items()
+                if datetime.fromisoformat(u.replace("Z", "+00:00")) <= now]:
+        pair_locks.pop(sym, None)
+    save_protection(state)
+
+    if locked_pairs:
+        return False, f"low_profit: locking pairs {locked_pairs} (negated in {LOWPROF_WINDOW_H:.0f}h)"
+
+    return True, "protections ok"
+
+
+def pair_locked(symbol):
+    state = load_protection()
+    u = state.get("pair_locks", {}).get(symbol)
+    if not u:
+        return False
+    try:
+        return datetime.fromisoformat(u.replace("Z", "+00:00")) > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
 def run_cycle():
     print(f"\n{'='*60}")
     print(f"  FLOAT GRID [{INSTANCE}] — {datetime.now().strftime('%H:%M:%S')} UTC")
@@ -412,6 +530,11 @@ def run_cycle():
         print(f"  Max grids active ({len(active_grids)}). Waiting.")
         return
 
+    ok, reason = check_protections()
+    if not ok:
+        print(f"  [PROTECT] {reason}")
+        return
+
     print(f"\n  Scanning {len(VOLATILE_PAIRS)} volatile pairs...")
     pairs_to_scan = [p for p in VOLATILE_PAIRS if p not in active_symbols]
     if not pairs_to_scan:
@@ -421,6 +544,9 @@ def run_cycle():
     best = None
     best_score = -999
     for sym in pairs_to_scan[:15]:
+        if pair_locked(sym):
+            print(f"    {sym} locked (low-profit), skip")
+            continue
         time.sleep(0.3)
         ticker = fetch_ticker(sym)
         if not ticker or ticker["price"] < 0.001:
