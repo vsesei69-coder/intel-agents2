@@ -89,15 +89,18 @@ def collect_status():
             pnl = stats.get("total_pnl", 0)
             wr = round(wins / total * 100, 1) if total else 0.0
             open_n = 0
+            open_symbols = []
             if isinstance(openf, list):
                 open_n = sum(1 for p in openf if isinstance(p, dict) and p.get("status") == "open")
+                open_symbols = [p.get("symbol") for p in openf if isinstance(p, dict) and p.get("status") == "open"]
             agents[name] = {
                 "pnl": pnl, "trades": total, "wins": wins, "losses": losses,
-                "wr": wr, "open": open_n,
+                "wr": wr, "open": open_n, "open_symbols": open_symbols,
             }
         else:
             open_n = len(openf) if isinstance(openf, list) else 0
-            agents[name] = {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "wr": 0.0, "open": open_n}
+            open_symbols = [p.get("symbol") for p in openf if isinstance(p, dict) and p.get("status") == "open"] if isinstance(openf, list) else []
+            agents[name] = {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "wr": 0.0, "open": open_n, "open_symbols": open_symbols}
         agents[name]["journal_dir"] = str(jdir.name)
         agents[name]["mtime"] = _fmt(jdir / HISTORY_FILE[name])
     sup = jread(BASE / "trading_journal" / "orchestrator_state.json") or {}
