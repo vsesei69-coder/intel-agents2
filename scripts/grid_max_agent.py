@@ -424,6 +424,45 @@ def run_cycle():
           f"WR: {wr:.0f}% | Active: {len(active)}")
 
 
+def cleanup_stale_grids():
+    """Close grids that are fully closed on levels but still marked open
+    (left over from earlier buggy SL logic)."""
+    grids = load_grids()
+    kept = []
+    closed = 0
+    for g in grids:
+        if g["status"] != "open":
+            continue
+        filled = [l for l in g["levels"] if l.get("filled")]
+        done = [l for l in g["levels"] if l.get("tp_hit") or l.get("sl_hit")]
+        if filled and len(filled) == len(done):
+            total = sum((l.get("pnl_usd") or 0) for l in g["levels"])
+            history = load_history()
+            s = history["stats"]
+            s["total"] += 1
+            if total > 0:
+                s["wins"] += 1
+            else:
+                s["losses"] += 1
+            s["total_pnl"] += total
+            history["trades"].append({
+                "symbol": g["symbol"], "direction": g["direction"],
+                "pnl": round(total, 2),
+                "tp_count": sum(1 for l in g["levels"] if l.get("tp_hit")),
+                "sl_count": sum(1 for l in g["levels"] if l.get("sl_hit")),
+                "opened": g["opened_at"], "closed": datetime.now(timezone.utc).isoformat(),
+                "reason": "cleanup_stale",
+            })
+            save_history(history)
+            closed += 1
+            continue
+        kept.append(g)
+    if closed:
+        save_grids(kept)
+        print(f"[cleanup] closed {closed} stale grid(s)", file=sys.stderr)
+    return closed
+
+
 def migrate_bias():
     """Close grids whose direction contradicts this instance's bias."""
     if not FLOAT_BIAS:
@@ -509,6 +548,7 @@ def main():
         return
 
     migrate_bias()
+    cleanup_stale_grids()
 
     print(f"Float Grid [{INSTANCE}] starting... (Ctrl+C to stop)", file=sys.stderr)
     running = True
