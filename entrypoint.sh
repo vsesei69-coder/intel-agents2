@@ -24,11 +24,11 @@ done
 FLOAT_INSTANCE=max nohup python scripts/grid_max_agent.py > logs/max_grid.log 2>&1 &
 echo "[bootstrap]  max_grid (instance=max) pid=$!"
 
-FLOAT_INSTANCE=max2 nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
-echo "[bootstrap]  max_grid2 (instance=max2) pid=$!"
+FLOAT_INSTANCE=max2 FLOAT_BIAS=long nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
+echo "[bootstrap]  max_grid2 (instance=max2, bias=long) pid=$!"
 
-FLOAT_INSTANCE=max3 nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
-echo "[bootstrap]  max_grid3 (instance=max3) pid=$!"
+FLOAT_INSTANCE=max3 FLOAT_BIAS=short nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
+echo "[bootstrap]  max_grid3 (instance=max3, bias=short) pid=$!"
 
 nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
 echo "[bootstrap]  status_server pid=$!"

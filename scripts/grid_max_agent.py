@@ -25,6 +25,7 @@ BINANCE_BASE = "https://api.binance.com/api/v3"
 UA = "FloatGrid/4.0"
 
 INSTANCE = os.environ.get("FLOAT_INSTANCE", "max")
+FLOAT_BIAS = os.environ.get("FLOAT_BIAS", "")  # "", "long", "short"
 JOURNAL_DIR = Path(__file__).parent.parent / f"trading_journal_{INSTANCE}"
 JOURNAL_DIR.mkdir(exist_ok=True)
 GRIDS_FILE = JOURNAL_DIR / "open_grids.json"
@@ -360,12 +361,22 @@ def run_cycle():
         price = ticker["price"]
         score = change
 
+        if FLOAT_BIAS == "long" and ticker["change"] >= 0:
+            continue
+        if FLOAT_BIAS == "short" and ticker["change"] <= 0:
+            continue
+
         if score > best_score:
             best_score = score
             best = {"symbol": sym, "price": price, "change": ticker["change"]}
 
     if best:
-        direction = "long" if best["change"] < 0 else "short"
+        if FLOAT_BIAS == "long":
+            direction = "long"
+        elif FLOAT_BIAS == "short":
+            direction = "short"
+        else:
+            direction = "long" if best["change"] < 0 else "short"
         grid = create_grid(best["symbol"], direction, best["price"])
         print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
         print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
