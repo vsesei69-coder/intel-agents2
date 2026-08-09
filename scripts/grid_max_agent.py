@@ -393,6 +393,65 @@ def run_cycle():
           f"WR: {wr:.0f}% | Active: {len(active)}")
 
 
+def migrate_bias():
+    """Close grids whose direction contradicts this instance's bias."""
+    if not FLOAT_BIAS:
+        return 0
+    grids = load_grids()
+    kept = []
+    closed = 0
+    for g in grids:
+        if g["status"] != "open":
+            continue
+        if g["direction"] == FLOAT_BIAS:
+            kept.append(g)
+            continue
+        # Close opposing grid at current price, book PnL
+        now_utc = datetime.now(timezone.utc)
+        ticker = fetch_ticker(g["symbol"])
+        px = ticker["price"] if ticker else g["center_price"]
+        total = 0.0
+        for lvl in g["levels"]:
+            if lvl.get("tp_hit") or lvl.get("sl_hit") or not lvl.get("filled"):
+                continue
+            if g["direction"] == "long":
+                pnl_pct = (px - lvl["fill_price"]) / lvl["fill_price"]
+            else:
+                pnl_pct = (lvl["fill_price"] - px) / lvl["fill_price"]
+            gross = lvl["size_usd"] * pnl_pct
+            opened_dt = datetime.fromisoformat(g["opened_at"].replace("Z", "+00:00"))
+            hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
+            costs = compute_costs(lvl["size_usd"], hours)
+            net = gross - costs["fee"] - costs["slip"] - costs["fund"]
+            lvl["pnl_usd"] = round(net, 2)
+            lvl["sl_hit"] = True
+            lvl["exit_price"] = round(px, 8)
+            lvl["exit_time"] = now_utc.isoformat()
+            total += net
+        g["status"] = "closed"
+        g["closed_at"] = now_utc.isoformat()
+        history = load_history()
+        s = history["stats"]
+        s["total"] += 1
+        if total > 0:
+            s["wins"] += 1
+        else:
+            s["losses"] += 1
+        s["total_pnl"] += total
+        history["trades"].append({
+            "symbol": g["symbol"], "direction": g["direction"],
+            "pnl": round(total, 2), "tp_count": 0, "sl_count": 1,
+            "opened": g["opened_at"], "closed": g["closed_at"],
+            "reason": "bias_migrate",
+        })
+        save_history(history)
+        closed += 1
+    if closed:
+        save_grids(kept)
+        print(f"[bias] {FLOAT_BIAS}: closed {closed} opposing grid(s)", file=sys.stderr)
+    return closed
+
+
 def main():
     import argparse
     p = argparse.ArgumentParser()
@@ -417,6 +476,8 @@ def main():
     if args.once:
         run_cycle()
         return
+
+    migrate_bias()
 
     print(f"Float Grid [{INSTANCE}] starting... (Ctrl+C to stop)", file=sys.stderr)
     running = True
