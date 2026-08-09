@@ -10,7 +10,7 @@ Full portfolio management with:
 """
 
 import json, os, subprocess, sys, time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).parent
@@ -138,7 +138,7 @@ def run_orchestrator():
                     state["cooldowns"][name] = "SHUTDOWN"
                     log_event("agent_shutdown", {"agent": name, "dd_pct": round(dd_pct, 1)})
                 else:
-                    ct = now.replace(minute=now.minute + duration)
+                    ct = now + timedelta(minutes=duration)
                     state["cooldowns"][name] = ct.isoformat()
                     log_event("cooldown_applied", {"agent": name, "dd_pct": round(dd_pct, 1), "minutes": duration})
                 break
