@@ -174,6 +174,18 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 body = p.read_bytes()
                 self._send(200, body, "application/json")
+            elif self.path.startswith("/rawopen/"):
+                name = self.path[len("/rawopen/"):]
+                jdir = JOURNALS.get(name)
+                if jdir is None:
+                    self._send(404, b'{"error":"unknown agent"}')
+                    return
+                p = jdir / OPEN_FILE[name]
+                if not p.exists():
+                    self._send(404, b'{"error":"no open file"}')
+                    return
+                body = p.read_bytes()
+                self._send(200, body, "application/json")
             elif self.path == "/health" or self.path == "/health/":
                 self._send(200, json.dumps({"status": "ok"}).encode())
             elif self.path == "/operator" or self.path == "/operator/":
