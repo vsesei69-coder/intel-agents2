@@ -1,65 +1,56 @@
-"""Agent #3 — Max Grid Strategy (dual BB + RSI scaled grid).
+"""Floating Grid Agent — плавающая сетка за ценой.
 
-Strategy (from neurotrading-bot/max_grid_strategy.py):
-  - Two independent grids: Bollinger (2.5% balance) + RSI (2.5% balance)
-  - Scaled orders: first largest, each subsequent ×0.85
-  - 5-12 orders per grid, count based on BB width (volatility)
-  - 0.3% grid step, close on opposite signal
-  - No hard stops — the grid itself IS the risk management
+Strategy:
+  - Сетка 33 уровней в диапазоне 3% вокруг текущей цены
+  - Шаг = 0.09% (GRID_RANGE / ORDERS)
+  - Сетка перецентрируется за ценой: когда цена уходит,
+    невыполненные уровни пересчитываются, добавляются новые
+  - TP = один шаг от entry (цена вернулась на уровень)
+  - SL = нет жёсткого ценового стопа
+  - Маржинальный стоп: если убыток > 60% маржи → закрыть с минусом
+  - Иначе держим — сетка сама выкупит при отскоке
 
-Bankroll: $1000 virtual | Leverage: 50x | Max 2 grids (one BB + one RSI)
-
-Uses per-cycle klines for fills, real fees/slippage/funding.
+Instance через env: FLOAT_INSTANCE (default "max")
+Journal: trading_journal_{instance}/
 """
 
 import hashlib, json, os, signal, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
-from statistics import mean, stdev
+from statistics import mean
 
 import requests
 
 BINANCE_BASE = "https://api.binance.com/api/v3"
-UA = "MaxGridBot/3.0"
+UA = "FloatGrid/4.0"
 
-JOURNAL_DIR = Path(__file__).parent.parent / "trading_journal_max"
+INSTANCE = os.environ.get("FLOAT_INSTANCE", "max")
+JOURNAL_DIR = Path(__file__).parent.parent / f"trading_journal_{INSTANCE}"
 JOURNAL_DIR.mkdir(exist_ok=True)
 GRIDS_FILE = JOURNAL_DIR / "open_grids.json"
 HISTORY_FILE = JOURNAL_DIR / "grid_history.json"
 
 BANKROLL = 1000.0
-BALANCE_PER_GRID = 0.025  # 2.5% per indicator
+BALANCE_PER_GRID = 0.03
 MAX_LEVERAGE = 50
-SCALE_FACTOR = 0.85       # each subsequent order is ×0.85 of previous
-GRID_STEP_PCT = 0.003     # 0.3% between levels
-MIN_ORDERS = 5
-MAX_ORDERS = 12
-
 TAKER_FEE = 0.0004
 SLIPPAGE = 0.001
 FUNDING_RATE = 0.0001
 
-PAIRS = [
-    "BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "AVAXUSDT",
-    "LINKUSDT", "DOTUSDT", "MATICUSDT", "UNIUSDT", "ATOMUSDT",
-    "ARBUSDT", "OPUSDT", "NEARUSDT", "APTUSDT", "FILUSDT",
-    "TRXUSDT", "ETCUSDT", "LTCUSDT", "BNBUSDT", "XRPUSDT",
+GRID_RANGE_PCT = float(os.environ.get("GRID_RANGE", "0.03"))
+GRID_ORDERS = int(os.environ.get("GRID_ORDERS", "33"))
+GRID_STEP_PCT = GRID_RANGE_PCT / GRID_ORDERS
+MARGIN_SL_PCT = 0.60
+RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
+
+VOLATILE_PAIRS = [
+    "DOGEUSDT", "PEPEUSDT", "WIFUSDT", "BONKUSDT", "FLOKIUSDT",
+    "SUIUSDT", "SEIUSDT", "TIAUSDT", "INJUSDT", "TONUSDT",
+    "AAVEUSDT", "CRVUSDT", "IMXUSDT", "LDOUSDT", "GALAUSDT",
+    "AVAXUSDT", "SOLUSDT", "NEARUSDT", "ARBUSDT", "OPUSDT",
+    "LINKUSDT", "DOTUSDT", "APTUSDT", "FILUSDT", "ADAUSDT",
+    "XRPUSDT", "ETHUSDT", "BNBUSDT", "TRXUSDT", "ETCUSDT",
 ]
-
-
-def fetch_klines(symbol, interval="15m", limit=100):
-    try:
-        r = requests.get(f"{BINANCE_BASE}/klines",
-                         params={"symbol": symbol, "interval": interval, "limit": limit},
-                         headers={"User-Agent": UA}, timeout=10)
-        if r.status_code != 200:
-            return []
-        return [{"o": float(k[1]), "h": float(k[2]), "l": float(k[3]),
-                 "c": float(k[4]), "v": float(k[5]),
-                 "t": datetime.fromtimestamp(k[0] / 1000, tz=timezone.utc)}
-                for k in r.json()]
-    except Exception:
-        return []
 
 
 def fetch_ticker(symbol):
@@ -93,42 +84,12 @@ def fetch_klines_range(symbol, start_time, end_time, interval="1m", limit=1000):
         return []
 
 
-def bollinger(closes, period=20, mult=2.0):
-    if len(closes) < period:
-        return None
-    r = closes[-period:]
-    sma = mean(r)
-    s = stdev(r) if len(r) > 1 else 0
-    return {"sma": sma, "upper": sma + mult * s, "lower": sma - mult * s,
-            "bw": (s * 2) / sma * 100 if sma > 0 else 0,
-            "pos": (closes[-1] - (sma - mult * s)) / (s * 2 * mult) * 100 if s > 0 else 50}
-
-
-def rsi(closes, period=14):
-    if len(closes) < period + 1:
-        return 50
-    g, l = [], []
-    for i in range(len(closes) - period, len(closes)):
-        d = closes[i] - closes[i - 1]
-        (g if d > 0 else l).append(abs(d))
-        (l if d > 0 else g).append(0)
-    ag, al = mean(g) if g else 0, mean(l) if l else 0
-    return 100 - (100 / (1 + ag / al)) if al > 0 else 100
-
-
-def atr(candles, period=14):
-    if len(candles) < period + 1:
-        return 0
-    trs = []
-    for i in range(1, len(candles)):
-        h, l, pc = candles[i]["h"], candles[i]["l"], candles[i - 1]["c"]
-        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
-    return mean(trs[-period:])
-
-
 def load_grids():
     if GRIDS_FILE.exists():
-        return json.loads(GRIDS_FILE.read_text())
+        try:
+            return json.loads(GRIDS_FILE.read_text())
+        except Exception:
+            return []
     return []
 
 
@@ -138,7 +99,10 @@ def save_grids(grids):
 
 def load_history():
     if HISTORY_FILE.exists():
-        return json.loads(HISTORY_FILE.read_text())
+        try:
+            return json.loads(HISTORY_FILE.read_text())
+        except Exception:
+            pass
     return {"trades": [], "stats": {"total": 0, "wins": 0, "losses": 0,
             "total_pnl": 0.0, "best_trade": 0.0, "worst_trade": 0.0,
             "total_fees": 0.0, "total_slippage": 0.0, "total_funding": 0.0}}
@@ -148,139 +112,81 @@ def save_history(history):
     HISTORY_FILE.write_text(json.dumps(history, indent=2, ensure_ascii=False))
 
 
-def compute_costs(size_usd, hours_open, leverage):
-    entry_notional = size_usd / leverage
+def compute_costs(size_usd, hours_open):
+    entry_notional = size_usd / MAX_LEVERAGE
     fee = entry_notional * TAKER_FEE * 2
     slip = size_usd * SLIPPAGE
     fund = size_usd * FUNDING_RATE * (hours_open / 8)
     return {"fee": round(fee, 4), "slip": round(slip, 4), "fund": round(fund, 4)}
 
 
-def analyze_pair(symbol):
-    """Signal based on BB + RSI — determines if we should open a grid."""
-    c_15 = fetch_klines(symbol, "15m", 100)
-    c_5 = fetch_klines(symbol, "5m", 60)
-
-    if len(c_15) < 30:
-        return None
-
-    ticker = fetch_ticker(symbol)
-    if not ticker or ticker["price"] < 0.01:
-        return None
-
-    price = ticker["price"]
-    closes_15 = [c["c"] for c in c_15]
-
-    bb = bollinger(closes_15, 20, 2.0)
-    r = rsi(closes_15, 14)
-    a = atr(c_15, 14)
-    if not bb or a == 0:
-        return None
-
-    # Determine direction and which indicator triggered
-    indicators = []
-
-    # BB signal
-    if bb["pos"] < 25:
-        indicators.append(("bb", "long", (1 - bb["pos"]/25) * 0.5 + 0.4))
-    elif bb["pos"] > 75:
-        indicators.append(("bb", "short", (bb["pos"]/100) * 0.5 + 0.4))
-
-    # RSI signal
-    if r < 35:
-        indicators.append(("rsi", "long", (1 - r/35) * 0.3 + 0.3))
-    elif r > 65:
-        indicators.append(("rsi", "short", (r/100) * 0.3 + 0.3))
-
-    if not indicators:
-        return None
-
-    # Pick best indicator signal
-    best = max(indicators, key=lambda x: x[2])
-    indicator, direction, confidence = best
-
-    if confidence < 0.5:
-        return None
-
-    # Dynamic order count based on BB width
-    bw = bb.get("bw", 2.0)
-    num_orders = MIN_ORDERS
-    if bw > 3.0:
-        num_orders = MAX_ORDERS
-    elif bw > 1.0:
-        ratio = (bw - 1.0) / 2.0
-        num_orders = int(MIN_ORDERS + ratio * (MAX_ORDERS - MIN_ORDERS))
-
-    # Build scaled grid levels
+def create_grid(symbol, direction, price):
     balance_for_grid = BANKROLL * BALANCE_PER_GRID
-    grid_step = price * GRID_STEP_PCT
-    total_scale = sum(SCALE_FACTOR ** i for i in range(num_orders))
-    base_amount = balance_for_grid / total_scale
+    amount_per_order = balance_for_grid / GRID_ORDERS
+    size_usd = amount_per_order * MAX_LEVERAGE
 
     levels = []
-    for i in range(num_orders):
-        amount = base_amount * (SCALE_FACTOR ** (num_orders - 1 - i))  # largest first
-        size_usd = amount * MAX_LEVERAGE
+    half_range = GRID_STEP_PCT * GRID_ORDERS / 2
 
-        if direction == "long":
-            entry = price - grid_step * (i + 1)
-            tp = entry + a * 1.5
-        else:
-            entry = price + grid_step * (i + 1)
-            tp = entry - a * 1.5
+    for i in range(GRID_ORDERS):
+        offset_pct = GRID_STEP_PCT * (i - GRID_ORDERS // 2)
+        entry = price * (1 + offset_pct)
+        tp = entry + (GRID_STEP_PCT * price) if direction == "long" else entry - (GRID_STEP_PCT * price)
+        if direction == "long" and tp <= entry:
+            tp = entry + GRID_STEP_PCT * price
+        if direction == "short" and tp >= entry:
+            tp = entry - GRID_STEP_PCT * price
 
         levels.append({
             "level": i + 1,
-            "entry": round(entry, 6),
-            "tp": round(tp, 6),
+            "entry": round(entry, 8),
+            "tp": round(tp, 8),
             "size_usd": round(size_usd, 2),
+            "margin": round(amount_per_order, 4),
             "filled": False,
             "fill_price": None,
             "fill_time": None,
             "tp_hit": False,
+            "sl_hit": False,
             "exit_price": None,
-            "tp_time": None,
+            "exit_time": None,
             "pnl_usd": None,
-            "gross_pnl": None,
-            "fees_paid": None,
-            "slippage_cost": None,
-            "funding_paid": None,
         })
 
-    sl = (levels[-1]["entry"] - a * 2) if direction == "long" else (levels[-1]["entry"] + a * 2)
-
-    return {
-        "symbol": symbol, "direction": direction, "indicator": indicator,
-        "price": price, "confidence": round(confidence, 2),
-        "bb_pos": round(bb["pos"], 1), "rsi": round(r, 1),
-        "bb_bw": round(bw, 2), "num_orders": num_orders,
-        "grid_step": round(grid_step, 6), "stop_loss": round(sl, 6),
+    grid = {
+        "id": hashlib.md5(f"{symbol}{price}{datetime.now(timezone.utc).isoformat()}".encode()).hexdigest()[:12],
+        "symbol": symbol,
+        "direction": direction,
+        "center_price": price,
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "last_checked_at": datetime.now(timezone.utc).isoformat(),
+        "status": "open",
         "balance_used": round(balance_for_grid, 2),
         "levels": levels,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def create_grid(signal):
-    grid = {
-        "id": hashlib.md5(f"{signal['symbol']}{signal['indicator']}{signal['timestamp']}".encode()).hexdigest()[:12],
-        "symbol": signal["symbol"],
-        "direction": signal["direction"],
-        "indicator": signal["indicator"],
-        "stop_loss": signal["stop_loss"],
-        "balance_used": signal["balance_used"],
-        "confidence": signal["confidence"],
-        "opened_at": signal["timestamp"],
-        "status": "open",
-        "last_checked_at": signal["timestamp"],
-        "levels": signal["levels"],
-        "closed_at": None,
-        "sl_hit": False,
     }
     grids = load_grids()
     grids.append(grid)
     save_grids(grids)
     return grid
+
+
+def recenter_grid(grid, current_price):
+    filled = [l for l in grid["levels"] if l.get("filled") and not l.get("tp_hit") and not l.get("sl_hit")]
+    unfilled = [l for l in grid["levels"] if not l.get("filled")]
+
+    for lvl in unfilled:
+        offset_pct = GRID_STEP_PCT * (lvl["level"] - GRID_ORDERS // 2)
+        new_entry = current_price * (1 + offset_pct)
+        if grid["direction"] == "long":
+            new_tp = new_entry + GRID_STEP_PCT * current_price
+        else:
+            new_tp = new_entry - GRID_STEP_PCT * current_price
+
+        lvl["entry"] = round(new_entry, 8)
+        lvl["tp"] = round(new_tp, 8)
+
+    grid["center_price"] = current_price
+    return True
 
 
 def check_grids():
@@ -293,99 +199,85 @@ def check_grids():
         if grid["status"] != "open":
             continue
 
+        symbol = grid["symbol"]
         direction = grid["direction"]
-        sl = grid["stop_loss"]
+        center = grid["center_price"]
         last_check_str = grid.get("last_checked_at", grid["opened_at"])
         last_check = datetime.fromisoformat(last_check_str.replace("Z", "+00:00"))
 
-        klines = fetch_klines_range(grid["symbol"], last_check, now_utc, "1m", 1000)
-        if not klines:
+        ticker = fetch_ticker(symbol)
+        if not ticker:
             grid["last_checked_at"] = now_utc.isoformat()
             updated = True
             continue
 
+        current_price = ticker["price"]
+
+        deviation = abs(current_price - center) / center if center > 0 else 0
+        if deviation > RECENTER_THRESHOLD:
+            recenter_grid(grid, current_price)
+            updated = True
+
         for lvl in grid["levels"]:
-            if lvl.get("filled") and lvl.get("tp_hit"):
+            if lvl.get("tp_hit") or lvl.get("sl_hit"):
                 continue
 
             if not lvl.get("filled"):
-                for c in klines:
-                    cross = (direction == "long" and c["l"] <= lvl["entry"]) or \
-                            (direction == "short" and c["h"] >= lvl["entry"])
-                    if cross:
-                        lvl["filled"] = True
-                        lvl["fill_price"] = round(c["l"] if direction == "long" else c["h"], 8)
-                        lvl["fill_time"] = c["t"].isoformat()
-                        updated = True
-                        break
-
-            if lvl.get("filled") and not lvl.get("tp_hit"):
-                for c in klines:
-                    cross = (direction == "long" and c["h"] >= lvl["tp"]) or \
-                            (direction == "short" and c["l"] <= lvl["tp"])
-                    if cross:
-                        lvl["tp_hit"] = True
-                        raw_exit = c["h"] if direction == "long" else c["l"]
-                        exit_slip = raw_exit * (1 - SLIPPAGE) if direction == "long" else raw_exit * (1 + SLIPPAGE)
-                        lvl["exit_price"] = round(exit_slip, 8)
-                        lvl["tp_time"] = c["t"].isoformat()
-
-                        pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
-                              else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
-                        gross = lvl["size_usd"] * pct * MAX_LEVERAGE
-
-                        opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
-                        hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
-                        costs = compute_costs(lvl["size_usd"], hours, MAX_LEVERAGE)
-                        net = gross - costs["fee"] - costs["slip"] - costs["fund"]
-
-                        lvl["pnl_usd"] = round(net, 2)
-                        lvl["gross_pnl"] = round(gross, 2)
-                        lvl["fees_paid"] = costs["fee"]
-                        lvl["slippage_cost"] = costs["slip"]
-                        lvl["funding_paid"] = costs["fund"]
-                        updated = True
-                        break
-
-        # SL check
-        any_filled = any(lvl.get("filled") for lvl in grid["levels"])
-        if any_filled:
-            for c in klines:
-                sl_hit = (direction == "long" and c["l"] <= sl) or (direction == "short" and c["h"] >= sl)
-                if sl_hit:
-                    grid["status"] = "closed"
-                    grid["closed_at"] = c["t"].isoformat()
-                    grid["sl_hit"] = True
-                    for lvl in grid["levels"]:
-                        if lvl.get("filled") and not lvl.get("tp_hit"):
-                            raw_exit = c["l"] if direction == "long" else c["h"]
-                            exit_slip = raw_exit * (1 - SLIPPAGE) if direction == "long" else raw_exit * (1 + SLIPPAGE)
-                            lvl["exit_price"] = round(exit_slip, 8)
-                            if lvl.get("fill_price"):
-                                pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if direction == "long" \
-                                      else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
-                                gross = lvl["size_usd"] * pct * MAX_LEVERAGE
-                                opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
-                                hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
-                                costs = compute_costs(lvl["size_usd"], hours, MAX_LEVERAGE)
-                                net = gross - costs["fee"] - costs["slip"] - costs["fund"]
-                                lvl["pnl_usd"] = round(net, 2)
-                                lvl["gross_pnl"] = round(gross, 2)
-                                lvl["fees_paid"] = costs["fee"]
-                                lvl["slippage_cost"] = costs["slip"]
-                                lvl["funding_paid"] = costs["fund"]
+                if direction == "long" and current_price <= lvl["entry"]:
+                    lvl["filled"] = True
+                    lvl["fill_price"] = lvl["entry"]
+                    lvl["fill_time"] = now_utc.isoformat()
                     updated = True
-                    break
+                elif direction == "short" and current_price >= lvl["entry"]:
+                    lvl["filled"] = True
+                    lvl["fill_price"] = lvl["entry"]
+                    lvl["fill_time"] = now_utc.isoformat()
+                    updated = True
 
-        # Grid complete: all filled levels hit TP
-        if not grid.get("sl_hit"):
-            filled = [l for l in grid["levels"] if l.get("filled")]
-            all_done = all(l.get("tp_hit") for l in filled) if filled else False
-            if all_done and len(filled) > 0:
-                grid["status"] = "closed"
-                grid["closed_at"] = now_utc.isoformat()
-                grid["sl_hit"] = False
-                updated = True
+            if lvl.get("filled") and not lvl.get("tp_hit") and not lvl.get("sl_hit"):
+                if direction == "long":
+                    pnl_pct = (current_price - lvl["fill_price"]) / lvl["fill_price"]
+                else:
+                    pnl_pct = (lvl["fill_price"] - current_price) / lvl["fill_price"]
+
+                margin_loss_pct = pnl_pct * MAX_LEVERAGE
+
+                if pnl_pct >= GRID_STEP_PCT * 0.5:
+                    lvl["tp_hit"] = True
+                    lvl["exit_price"] = round(current_price, 8)
+                    lvl["exit_time"] = now_utc.isoformat()
+
+                    gross = lvl["size_usd"] * pnl_pct
+                    opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
+                    hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
+                    costs = compute_costs(lvl["size_usd"], hours)
+                    net = gross - costs["fee"] - costs["slip"] - costs["fund"]
+                    lvl["pnl_usd"] = round(net, 2)
+                    updated = True
+
+                elif margin_loss_pct >= -MARGIN_SL_PCT:
+                    lvl["sl_hit"] = True
+                    lvl["exit_price"] = round(current_price, 8)
+                    lvl["exit_time"] = now_utc.isoformat()
+
+                    gross = lvl["size_usd"] * pnl_pct
+                    opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
+                    hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
+                    costs = compute_costs(lvl["size_usd"], hours)
+                    net = gross - costs["fee"] - costs["slip"] - costs["fund"]
+                    lvl["pnl_usd"] = round(net, 2)
+                    updated = True
+
+        all_levels_done = all(
+            l.get("tp_hit") or l.get("sl_hit")
+            for l in grid["levels"]
+        )
+        filled_any = any(l.get("filled") for l in grid["levels"])
+
+        if filled_any and all_levels_done:
+            grid["status"] = "closed"
+            grid["closed_at"] = now_utc.isoformat()
+            updated = True
 
         if grid["status"] == "open":
             grid["last_checked_at"] = now_utc.isoformat()
@@ -397,21 +289,28 @@ def check_grids():
         for grid in grids:
             if grid["status"] == "closed":
                 total_pnl = sum((lvl.get("pnl_usd") or 0) for lvl in grid["levels"])
-                total_fees = sum((lvl.get("fees_paid") or 0) for lvl in grid["levels"])
-                total_slip = sum((lvl.get("slippage_cost") or 0) for lvl in grid["levels"])
-                total_fund = sum((lvl.get("funding_paid") or 0) for lvl in grid["levels"])
+                total_tp = sum(1 for lvl in grid["levels"] if lvl.get("tp_hit"))
+                total_sl = sum(1 for lvl in grid["levels"] if lvl.get("sl_hit"))
+
                 s = history["stats"]
                 s["total"] += 1
                 if total_pnl > 0:
                     s["wins"] += 1
-                    s["best_trade"] = max(s["best_trade"], total_pnl)
+                    s["best_trade"] = max(s.get("best_trade", 0), total_pnl)
                 else:
                     s["losses"] += 1
-                    s["worst_trade"] = min(s["worst_trade"], total_pnl)
+                    s["worst_trade"] = min(s.get("worst_trade", 0), total_pnl)
                 s["total_pnl"] += total_pnl
-                s["total_fees"] = s.get("total_fees", 0) + total_fees
-                s["total_slippage"] = s.get("total_slippage", 0) + total_slip
-                s["total_funding"] = s.get("total_funding", 0) + total_fund
+
+                history["trades"].append({
+                    "symbol": grid["symbol"],
+                    "direction": grid["direction"],
+                    "pnl": round(total_pnl, 2),
+                    "tp_count": total_tp,
+                    "sl_count": total_sl,
+                    "opened": grid["opened_at"],
+                    "closed": grid.get("closed_at"),
+                })
 
         active = [g for g in grids if g["status"] == "open"]
         save_grids(active)
@@ -420,15 +319,11 @@ def check_grids():
     return grids
 
 
-def can_open_indicator(indicator):
-    active = [g for g in load_grids() if g["status"] == "open"]
-    return not any(g["indicator"] == indicator for g in active)
-
-
 def run_cycle():
     print(f"\n{'='*60}")
-    print(f"  MAX GRID AGENT #3 — {datetime.now().strftime('%H:%M:%S')} UTC")
-    print(f"  Dual BB+RSI scaled grids | Bal: ${BANKROLL} | Lev: {MAX_LEVERAGE}x")
+    print(f"  FLOAT GRID [{INSTANCE}] — {datetime.now().strftime('%H:%M:%S')} UTC")
+    print(f"  Range: {GRID_RANGE_PCT*100:.1f}% | Orders: {GRID_ORDERS} | "
+          f"Step: {GRID_STEP_PCT*100:.3f}% | Lev: {MAX_LEVERAGE}x")
     print(f"{'='*60}")
 
     closed = [g for g in check_grids() if g["status"] == "closed"]
@@ -436,51 +331,48 @@ def run_cycle():
         print(f"\n  [CLOSED] {len(closed)} grid(s):")
         for g in closed:
             total = sum((lvl.get("pnl_usd") or 0) for lvl in g["levels"])
-            tp_sl = "SL" if g.get("sl_hit") else "TP"
-            print(f"    {g['symbol']} [{g['indicator']}] {g['direction']}: ${total:+.2f} | {tp_sl}")
+            tps = sum(1 for l in g["levels"] if l.get("tp_hit"))
+            sls = sum(1 for l in g["levels"] if l.get("sl_hit"))
+            print(f"    {g['symbol']} [{g['direction']}]: ${total:+.2f} | TP:{tps} SL:{sls}")
 
-    if not can_open_indicator("bb") and not can_open_indicator("rsi"):
-        print(f"  Both grids active. Waiting for closures.")
+    active_grids = load_grids()
+    active_symbols = {g["symbol"] for g in active_grids if g["status"] == "open"}
+
+    if len(active_grids) >= 8:
+        print(f"  Max grids active ({len(active_grids)}). Waiting.")
         return
 
-    print(f"\n  Scanning for signals...")
-    try:
-        from vol_monitor import get_top_volatile_pairs
-        scan_pairs = get_top_volatile_pairs(12)
-    except Exception:
-        scan_pairs = PAIRS[:12]
-    signals = []
-    for sym in scan_pairs:
-        time.sleep(0.4)
-        s = analyze_pair(sym)
-        if s:
-            signals.append(s)
+    print(f"\n  Scanning {len(VOLATILE_PAIRS)} volatile pairs...")
+    pairs_to_scan = [p for p in VOLATILE_PAIRS if p not in active_symbols]
+    if not pairs_to_scan:
+        print(f"  All pairs covered. Waiting.")
+        return
 
-    signals.sort(key=lambda x: x["confidence"], reverse=True)
-
-    opened = 0
-    for sig in signals:
-        if not can_open_indicator(sig["indicator"]):
+    best = None
+    best_score = -999
+    for sym in pairs_to_scan[:15]:
+        time.sleep(0.3)
+        ticker = fetch_ticker(sym)
+        if not ticker or ticker["price"] < 0.001:
             continue
-        try:
-            from regime_detector import check_direction_allowed
-            ok, msg = check_direction_allowed(sig["direction"], "max_grid")
-            if not ok:
-                continue
-        except Exception:
-            pass
-        grid = create_grid(sig)
-        entries = [l["entry"] for l in sig["levels"]]
-        print(f"\n  [OPENED] {sig['direction'].upper()} {sig['symbol']} [{sig['indicator']}]")
-        print(f"    Price: ${sig['price']:.4f} | Conf: {sig['confidence']:.0%} | "
-              f"BB: {sig['bb_pos']}% | RSI: {sig['rsi']}")
-        print(f"    Orders: {sig['num_orders']} | Step: {sig['grid_step']:.4f} | "
-              f"Bal: ${sig['balance_used']:.2f}")
-        print(f"    Levels: {[f'${e:.4f}' for e in entries[:5]]}{'...' if len(entries) > 5 else ''}")
-        opened += 1
 
-    if not opened:
-        print(f"  No valid signals.")
+        change = abs(ticker["change"])
+        price = ticker["price"]
+        score = change
+
+        if score > best_score:
+            best_score = score
+            best = {"symbol": sym, "price": price, "change": ticker["change"]}
+
+    if best:
+        direction = "long" if best["change"] < 0 else "short"
+        grid = create_grid(best["symbol"], direction, best["price"])
+        print(f"\n  [OPENED] {best['symbol']} {direction.upper()}")
+        print(f"    Price: ${best['price']:.6f} | 24h: {best['change']:+.2f}%")
+        print(f"    Grid: {GRID_ORDERS} orders | Step: {GRID_STEP_PCT*100:.3f}% | "
+              f"Range: ±{GRID_RANGE_PCT*50:.1f}%")
+    else:
+        print(f"  No candidates found.")
 
     history = load_history()
     s = history["stats"]
@@ -488,10 +380,6 @@ def run_cycle():
     wr = s["wins"] / s["total"] * 100 if s["total"] > 0 else 0
     print(f"\n  [STATUS] PnL: ${s['total_pnl']:+.2f} | Trades: {s['total']} | "
           f"WR: {wr:.0f}% | Active: {len(active)}")
-    tf = s.get("total_fees", 0)
-    if tf > 0:
-        print(f"  [COSTS]  Fees: ${tf:.2f} | Slippage: ${s.get('total_slippage',0):.2f} | "
-              f"Funding: ${s.get('total_funding',0):.2f}")
 
 
 def main():
@@ -506,19 +394,20 @@ def main():
         history = load_history()
         s = history["stats"]
         wr = s["wins"] / s["total"] * 100 if s["total"] > 0 else 0
-        print(f"Max Grid Agent #3 | PnL: ${s['total_pnl']:+.2f} | "
-              f"{s['total']} trades | WR: {wr:.0f}% | Open: {len(grids)}")
+        print(f"Float Grid [{INSTANCE}] | PnL: ${s['total_pnl']:+.2f} | "
+              f"{s['total']} trades | WR: {wr:.0f}% | Active: {len(grids)}")
         for g in grids:
-            filled_count = sum(1 for l in g["levels"] if l.get("filled"))
-            print(f"  {g['symbol']} [{g['indicator']}] {g['direction']}: "
-                  f"{filled_count}/{len(g['levels'])} filled")
+            filled = sum(1 for l in g["levels"] if l.get("filled"))
+            tps = sum(1 for l in g["levels"] if l.get("tp_hit"))
+            sls = sum(1 for l in g["levels"] if l.get("sl_hit"))
+            print(f"  {g['symbol']} [{g['direction']}]: {filled} filled, {tps} TP, {sls} SL")
         return
 
     if args.once:
         run_cycle()
         return
 
-    print("Max Grid Agent #3 starting... (Ctrl+C to stop)", file=sys.stderr)
+    print(f"Float Grid [{INSTANCE}] starting... (Ctrl+C to stop)", file=sys.stderr)
     running = True
 
     def handler(sig, frame):
@@ -533,7 +422,7 @@ def main():
     except KeyboardInterrupt:
         pass
 
-    print("\nAgent #3 stopped.", file=sys.stderr)
+    print(f"\nFloat Grid [{INSTANCE}] stopped.", file=sys.stderr)
 
 
 if __name__ == "__main__":

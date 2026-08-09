@@ -24,24 +24,20 @@ RESERVE_PCT = 0.20
 MAX_PER_AGENT_PCT = 0.30
 
 AGENTS = {
-    "trend":       {"script": "agent_monitor.py",      "journal": JOURNAL_BASE / "trade_history.json",                          "open": JOURNAL_BASE / "open_positions.json"},
-    "grid":        {"script": "grid_agent.py",          "journal": JOURNAL_BASE.parent / "trading_journal_grid" / "grid_history.json",    "open": JOURNAL_BASE.parent / "trading_journal_grid" / "open_grids.json"},
-    "max_grid":    {"script": "grid_max_agent.py",       "journal": JOURNAL_BASE.parent / "trading_journal_max" / "grid_history.json",     "open": JOURNAL_BASE.parent / "trading_journal_max" / "open_grids.json"},
-    "corridor":    {"script": "grid_corridor_agent.py",  "journal": JOURNAL_BASE.parent / "trading_journal_corridor" / "corridor_history.json", "open": JOURNAL_BASE.parent / "trading_journal_corridor" / "open_grids.json"},
-    "xrp":         {"script": "xrp_grid_agent.py",      "journal": JOURNAL_BASE.parent / "trading_journal_xrp" / "xrp_history.json",          "open": JOURNAL_BASE.parent / "trading_journal_xrp" / "open_grids.json"},
-    "stoch":       {"script": "stoch_agent.py",          "journal": JOURNAL_BASE.parent / "trading_journal_stoch" / "stoch_history.json",      "open": JOURNAL_BASE.parent / "trading_journal_stoch" / "open_positions.json"},
-    "level_grid":  {"script": "level_grid_agent.py",     "journal": JOURNAL_BASE.parent / "trading_journal_levels" / "level_history.json",     "open": JOURNAL_BASE.parent / "trading_journal_levels" / "level_grids.json"},
+    "grid":       {"script": "grid_agent.py",         "journal": JOURNAL_BASE.parent / "trading_journal_grid" / "grid_history.json",        "open": JOURNAL_BASE.parent / "trading_journal_grid" / "open_grids.json"},
+    "max_grid":   {"script": "grid_max_agent.py",      "journal": JOURNAL_BASE.parent / "trading_journal_max" / "grid_history.json",        "open": JOURNAL_BASE.parent / "trading_journal_max" / "open_grids.json",     "env": {"FLOAT_INSTANCE": "max"}},
+    "max_grid2":  {"script": "grid_max_agent.py",      "journal": JOURNAL_BASE.parent / "trading_journal_max2" / "grid_history.json",       "open": JOURNAL_BASE.parent / "trading_journal_max2" / "open_grids.json",    "env": {"FLOAT_INSTANCE": "max2"}},
+    "max_grid3":  {"script": "grid_max_agent.py",      "journal": JOURNAL_BASE.parent / "trading_journal_max3" / "grid_history.json",       "open": JOURNAL_BASE.parent / "trading_journal_max3" / "open_grids.json",    "env": {"FLOAT_INSTANCE": "max3"}},
+    "corridor":   {"script": "grid_corridor_agent.py", "journal": JOURNAL_BASE.parent / "trading_journal_corridor" / "corridor_history.json", "open": JOURNAL_BASE.parent / "trading_journal_corridor" / "open_grids.json"},
+    "xrp":        {"script": "xrp_grid_agent.py",      "journal": JOURNAL_BASE.parent / "trading_journal_xrp" / "xrp_history.json",         "open": JOURNAL_BASE.parent / "trading_journal_xrp" / "open_grids.json"},
+    "stoch":      {"script": "stoch_agent.py",         "journal": JOURNAL_BASE.parent / "trading_journal_stoch" / "stoch_history.json",     "open": JOURNAL_BASE.parent / "trading_journal_stoch" / "open_positions.json"},
+    "level_grid": {"script": "level_grid_agent.py",    "journal": JOURNAL_BASE.parent / "trading_journal_levels" / "level_history.json",    "open": JOURNAL_BASE.parent / "trading_journal_levels" / "level_grids.json"},
 }
 
 REGIME_FILE = JOURNAL_BASE / "market_regime.json"
 
-# Cooldown levels (drawdown % → cooldown minutes)
 COOLDOWN_LEVELS = [(3, 30), (10, 120), (25, 480), (50, "SHUTDOWN")]
-
-# Inactivity: if agent has 0 trades in N cycles, flag it
 INACTIVITY_CYCLES = 20
-
-# Emergency: portfolio drawdown threshold
 EMERGENCY_DD_PCT = 30.0
 
 
@@ -93,7 +89,6 @@ def run_orchestrator():
     state["cycles"] = state.get("cycles", 0) + 1
     now = datetime.now(timezone.utc)
 
-    # Init allocations
     for name in AGENTS:
         if name not in state.setdefault("allocations", {}):
             state["allocations"][name] = BANKROLL_PER_AGENT
@@ -102,15 +97,12 @@ def run_orchestrator():
         if name not in state.setdefault("cooldowns", {}):
             state["cooldowns"][name] = None
 
-    # Load agent stats
     agents_data = {}
     for name in AGENTS:
         agents_data[name] = load_agent_stats(name) or {"pnl": 0, "trades": 0, "wins": 0, "losses": 0, "wr": 0, "open": 0}
 
-    # Regime
     regime, advice = get_regime()
 
-    # ── RELEASE COOLDOWNS ──
     released = []
     for name, cd in list(state["cooldowns"].items()):
         if cd and cd != "SHUTDOWN":
@@ -120,7 +112,6 @@ def run_orchestrator():
                 released.append(name)
                 log_event("cooldown_released", {"agent": name})
 
-    # ── HEALTH CHECKS ──
     for name, data in agents_data.items():
         cd = state["cooldowns"].get(name)
         if cd == "SHUTDOWN":
@@ -131,7 +122,6 @@ def run_orchestrator():
         alloc = state["allocations"].get(name, BANKROLL_PER_AGENT)
         dd_pct = abs(min(data["pnl"], 0)) / alloc * 100 if alloc > 0 else 0
 
-        # Gradual cooldown based on drawdown
         for threshold, duration in COOLDOWN_LEVELS:
             if dd_pct >= threshold and not cd:
                 if duration == "SHUTDOWN":
@@ -143,11 +133,9 @@ def run_orchestrator():
                     log_event("cooldown_applied", {"agent": name, "dd_pct": round(dd_pct, 1), "minutes": duration})
                 break
 
-        # Inactivity detection
         prev_trades = state["last_trade_counts"].get(name, 0)
         current_trades = data["trades"]
         if prev_trades == current_trades and current_trades > 0:
-            # Agent had trades but none recently — could be stuck
             if name not in state.setdefault("stuck_cycles", {}):
                 state["stuck_cycles"][name] = 0
             state["stuck_cycles"][name] += 1
@@ -155,7 +143,6 @@ def run_orchestrator():
             state["stuck_cycles"][name] = 0
         state["last_trade_counts"][name] = current_trades
 
-    # ── REGIME-BASED ACTIVATION ──
     regime_actions = []
     if regime == "BULL_TREND":
         regime_actions.append("SHORT blocked for all agents")
@@ -166,7 +153,6 @@ def run_orchestrator():
     elif regime in ("HIGH_VOL", "CRASH", "SURGE"):
         regime_actions.append("Reduce positions, widen stops")
 
-    # ── AI_OPTIMAL ALLOCATION ──
     effective_capital = TOTAL_BANKROLL * (1 - RESERVE_PCT)
     active_agents = {n: d for n, d in agents_data.items()
                      if state["cooldowns"].get(n) != "SHUTDOWN"}
@@ -177,13 +163,11 @@ def run_orchestrator():
             pnl = data["pnl"]
             wr = data["wr"]
             trades = data["trades"]
-
-            # Score: PnL bonus + WR bonus − DD penalty + regime bonus
             alloc = state["allocations"].get(name, BANKROLL_PER_AGENT)
             dd_penalty = abs(min(pnl, 0)) / max(alloc, 1) * 100
             regime_bonus = 0.1 if regime == "RANGING" and name in ("corridor", "grid", "xrp") else 0
-            regime_bonus += 0.1 if regime == "BULL_TREND" and name == "trend" else 0
-
+            if name.startswith("max_grid"):
+                regime_bonus += 0.15
             score = (pnl / max(alloc, 1)) * 0.4 + (wr / 100) * 0.2 + (trades / 20) * 0.1
             score += regime_bonus - dd_penalty * 0.01
             scores[name] = max(0.1, score)
@@ -195,26 +179,21 @@ def run_orchestrator():
             alloc = max(100, min(alloc, TOTAL_BANKROLL * MAX_PER_AGENT_PCT))
             state["allocations"][name] = alloc
 
-    # ── EMERGENCY CHECK ──
     total_pnl = sum(d["pnl"] for d in agents_data.values())
     portfolio_dd = abs(min(total_pnl, 0)) / TOTAL_BANKROLL * 100
     emergency = portfolio_dd > EMERGENCY_DD_PCT
 
     if emergency:
-        # Pause new entries for losing agents, keep winners running
         for name, data in agents_data.items():
-            if data["pnl"] < -100:  # only shutdown deep losers
+            if data["pnl"] < -100:
                 state["cooldowns"][name] = "PAUSED"
         log_event("emergency_pause", {"portfolio_dd": round(portfolio_dd, 1)})
 
     save_state(state)
 
-    # ── PRINT REPORT ──
     total_trades = sum(d["trades"] for d in agents_data.values())
     total_wins = sum(d["wins"] for d in agents_data.values())
     total_losses = sum(d["losses"] for d in agents_data.values())
-    total_fees = sum(d["fees"] for d in agents_data.values())
-    total_slip = sum(d["slip"] for d in agents_data.values())
 
     print(f"\n{'='*65}")
     print(f"  NEITIS ORCHESTRATOR — {now.strftime('%H:%M:%S')} — Cycle #{state['cycles']}")
@@ -258,14 +237,18 @@ def run_orchestrator():
         if paused:
             print(f"  [PAUSED] {', '.join(paused)} — new entries blocked")
 
-    # ── RESTART STUCK AGENTS ──
     for name in AGENTS:
         stuck = state.get("stuck_cycles", {}).get(name, 0)
         if stuck > INACTIVITY_CYCLES:
-            script = AGENTS[name]["script"]
+            cfg = AGENTS[name]
+            script = cfg["script"]
             try:
+                env = os.environ.copy()
+                if "env" in cfg:
+                    env.update(cfg["env"])
                 subprocess.Popen([sys.executable, str(SCRIPTS_DIR / script)],
-                                 creationflags=subprocess.CREATE_NO_WINDOW)
+                                 creationflags=subprocess.CREATE_NO_WINDOW,
+                                 env=env)
                 state["stuck_cycles"][name] = 0
                 log_event("agent_restarted", {"agent": name, "reason": "inactivity"})
             except Exception:

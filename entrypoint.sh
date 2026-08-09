@@ -6,6 +6,8 @@ echo "[bootstrap] scripts synced from image"
 mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_grid \
          /opt/intel/trading_journal_max \
+         /opt/intel/trading_journal_max2 \
+         /opt/intel/trading_journal_max3 \
          /opt/intel/trading_journal_corridor \
          /opt/intel/trading_journal_xrp \
          /opt/intel/trading_journal_stoch \
@@ -14,10 +16,19 @@ mkdir -p /opt/intel/trading_journal \
 cd /opt/intel
 
 echo "[bootstrap] starting agents in background"
-for a in agent_monitor grid_agent grid_max_agent grid_corridor_agent xrp_grid_agent stoch_agent level_grid_agent; do
+for a in grid_agent grid_corridor_agent xrp_grid_agent stoch_agent level_grid_agent; do
   nohup python "scripts/$a.py" > "logs/$a.log" 2>&1 &
   echo "[bootstrap]  $a pid=$!"
 done
+
+FLOAT_INSTANCE=max nohup python scripts/grid_max_agent.py > logs/max_grid.log 2>&1 &
+echo "[bootstrap]  max_grid (instance=max) pid=$!"
+
+FLOAT_INSTANCE=max2 nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
+echo "[bootstrap]  max_grid2 (instance=max2) pid=$!"
+
+FLOAT_INSTANCE=max3 nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
+echo "[bootstrap]  max_grid3 (instance=max3) pid=$!"
 
 nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
 echo "[bootstrap]  status_server pid=$!"

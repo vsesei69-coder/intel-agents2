@@ -4,6 +4,8 @@
 GET /        -> HTML статус
 GET /status  -> JSON
 GET /raw/<journal> -> сырой файл журнала
+GET /health  -> healthcheck
+GET /operator -> watchdog actions
 """
 import json
 import sys
@@ -14,31 +16,34 @@ from pathlib import Path
 BASE = Path("/opt/intel")
 SCRIPTS = BASE / "scripts"
 JOURNALS = {
-    "trend": BASE / "trading_journal",
-    "grid": BASE / "trading_journal_grid",
-    "max_grid": BASE / "trading_journal_max",
-    "corridor": BASE / "trading_journal_corridor",
-    "xrp": BASE / "trading_journal_xrp",
-    "stoch": BASE / "trading_journal_stoch",
+    "grid":       BASE / "trading_journal_grid",
+    "max_grid":   BASE / "trading_journal_max",
+    "max_grid2":  BASE / "trading_journal_max2",
+    "max_grid3":  BASE / "trading_journal_max3",
+    "corridor":   BASE / "trading_journal_corridor",
+    "xrp":        BASE / "trading_journal_xrp",
+    "stoch":      BASE / "trading_journal_stoch",
     "level_grid": BASE / "trading_journal_levels",
 }
 
 HISTORY_FILE = {
-    "trend": "trade_history.json",
-    "grid": "grid_history.json",
-    "max_grid": "grid_history.json",
-    "corridor": "corridor_history.json",
-    "xrp": "xrp_history.json",
-    "stoch": "stoch_history.json",
+    "grid":       "grid_history.json",
+    "max_grid":   "grid_history.json",
+    "max_grid2":  "grid_history.json",
+    "max_grid3":  "grid_history.json",
+    "corridor":   "corridor_history.json",
+    "xrp":        "xrp_history.json",
+    "stoch":      "stoch_history.json",
     "level_grid": "level_grids.json",
 }
 OPEN_FILE = {
-    "trend": "open_positions.json",
-    "grid": "open_grids.json",
-    "max_grid": "open_grids.json",
-    "corridor": "open_grids.json",
-    "xrp": "open_grids.json",
-    "stoch": "open_positions.json",
+    "grid":       "open_grids.json",
+    "max_grid":   "open_grids.json",
+    "max_grid2":  "open_grids.json",
+    "max_grid3":  "open_grids.json",
+    "corridor":   "open_grids.json",
+    "xrp":        "open_grids.json",
+    "stoch":      "open_positions.json",
     "level_grid": "open_grids.json",
 }
 
@@ -61,6 +66,15 @@ def last_line_count(path):
     return 0
 
 
+def _fmt(p):
+    try:
+        if p.exists():
+            return datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()
+    except Exception:
+        pass
+    return None
+
+
 def collect_status():
     now = datetime.now(timezone.utc).isoformat()
     agents = {}
@@ -81,9 +95,6 @@ def collect_status():
                 "pnl": pnl, "trades": total, "wins": wins, "losses": losses,
                 "wr": wr, "open": open_n,
             }
-        elif isinstance(hist, list):
-            open_n = len(openf) if isinstance(openf, list) else 0
-            agents[name] = {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "wr": 0.0, "open": open_n}
         else:
             open_n = len(openf) if isinstance(openf, list) else 0
             agents[name] = {"pnl": 0.0, "trades": 0, "wins": 0, "losses": 0, "wr": 0.0, "open": open_n}
@@ -97,15 +108,6 @@ def collect_status():
         "regime": regime.get("regime", "UNKNOWN"),
         "agents": agents,
     }
-
-
-def _fmt(p):
-    try:
-        if p.exists():
-            return datetime.fromtimestamp(p.stat().st_mtime, timezone.utc).isoformat()
-    except Exception:
-        pass
-    return None
 
 
 def render_html(status):
@@ -122,21 +124,23 @@ def render_html(status):
             f"<td>{a['mtime'] or '-'}</td>"
             "</tr>"
         )
+    total_pnl = sum(a['pnl'] for a in status["agents"].values())
     return f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>intel-agents status</title>
 <style>
 body{{font-family:monospace;background:#111;color:#eee;padding:20px}}
 h1{{color:#4caf50}} table{{border-collapse:collapse}} td,th{{border:1px solid #333;padding:6px 12px}}
 th{{background:#222;color:#4caf50}}
+.pnl-pos{{color:#4caf50}} .pnl-neg{{color:#f44336}}
 </style></head>
 <body>
 <h1>intel-agents — NEITIS status</h1>
-<p>updated: {status['ts']} | regime: <b>{status['regime']}</b> | cycles: {status['supervisor']['cycles']}</p>
+<p>updated: {status['ts']} | regime: <b>{status['regime']}</b> | cycles: {status['supervisor']['cycles']} | total PnL: <b>${total_pnl:+.2f}</b></p>
 <table>
 <tr><th>agent</th><th>PnL</th><th>trades</th><th>W/L</th><th>WR</th><th>open</th><th>last journal</th></tr>
 {''.join(rows)}
 </table>
-<p>GET /status for JSON</p>
+<p>GET /status for JSON | GET /health | GET /operator</p>
 </body></html>"""
 
 
