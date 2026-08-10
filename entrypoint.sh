@@ -11,6 +11,10 @@ mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_max4 \
          /opt/intel/trading_journal_corridor \
          /opt/intel/trading_journal_corridor2 \
+         /opt/intel/trading_journal_dca_nil \
+         /opt/intel/trading_journal_dca_esp \
+         /opt/intel/trading_journal_dca_ace \
+         /opt/intel/trading_journal_dca_onu \
          /opt/intel/trading_journal_xrp \
          /opt/intel/trading_journal_stoch \
          /opt/intel/trading_journal_levels \
@@ -27,6 +31,18 @@ done
 # coverage (corridor proved profitable: +$513 / 25 trades / WR 64%).
 CORRIDOR_INSTANCE=corridor2 nohup python scripts/grid_corridor_agent.py > logs/corridor2.log 2>&1 &
 echo "[bootstrap]  corridor2 (instance=corridor2) pid=$!"
+
+# DCA scale-in grids (no stops) on trending volatile pairs picked by
+# daily/weekly RSI screen. One $1000 bot per pair, 15x lev, 8 levels,
+# margin x1.5 scale-in, TP +2% bounce. Symbol+instance per bot.
+dca_pair() {
+  DCA_INSTANCE=$1 DCA_SYMBOL=$2 nohup python scripts/grid_dca_agent.py > "logs/dca_$1.log" 2>&1 &
+  echo "[bootstrap]  dca_$1 ($2) pid=$!"
+}
+dca_pair nil NILUSDT
+dca_pair esp ESPUSDT
+dca_pair ace ACEUSDT
+dca_pair onu ONUSDT
 
 # Scalp grids: narrow ranges, many levels, small frequent TPs, 50x, bigger margin.
 # BB filter (Bandtastic): only enter long at BB-lower support, short at BB-upper.
