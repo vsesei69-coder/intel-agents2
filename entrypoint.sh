@@ -11,6 +11,7 @@ mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_max4 \
          /opt/intel/trading_journal_corridor \
          /opt/intel/trading_journal_corridor3 \
+         /opt/intel/trading_journal_smith \
          /opt/intel/trading_journal_dca_nil \
          /opt/intel/trading_journal_dca_esp \
          /opt/intel/trading_journal_dca_ace \
@@ -33,6 +34,11 @@ done
 # guard (close at market when one side >70% filled), real trade journaling.
 CORRIDOR_INSTANCE=corridor3 nohup python scripts/grid_corridor_agent.py > logs/corridor3.log 2>&1 &
 echo "[bootstrap]  corridor3 (instance=corridor3) pid=$!"
+
+# Agent Smith — trailing-limit grid at BB edges, 20x, 0.1% step, 20 levels.
+# Rides price along the band, no stops, each level takes 0.1% TP.
+SMITH_INSTANCE=smith nohup python scripts/agent_smith.py > logs/smith.log 2>&1 &
+echo "[bootstrap]  agent_smith (instance=smith) pid=$!"
 
 # DCA scale-in grids (no stops) on trending volatile pairs picked by
 # daily/weekly RSI screen. One $1000 bot per pair, 15x lev, 8 levels,

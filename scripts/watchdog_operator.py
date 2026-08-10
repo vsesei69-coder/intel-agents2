@@ -34,6 +34,7 @@ JOB = "mythos-inference"
 AGENTS = [
     "grid_agent", "grid_max_agent", "grid_max_agent3", "grid_max_agent4",
     "grid_corridor_agent", "grid_corridor_agent3",
+    "agent_smith",
     "dca_nil_agent", "dca_esp_agent", "dca_ace_agent", "dca_onu_agent",
     "xrp_grid_agent", "stoch_agent", "level_grid_agent",
 ]
@@ -44,6 +45,7 @@ AGENT_PROCESSES = {
     "grid_max_agent4":      ("grid_max_agent.py",        {"FLOAT_INSTANCE": "max4", "GRID_RANGE": "0.03", "GRID_ORDERS": "21", "TP_FACTOR": "3.0", "BALANCE_PER_GRID": "0.04", "MAX_LEVERAGE": "30", "BB_FILTER": "1", "GRID_TF": "30m", "BB_TF": "30m", "MAX_HOLD_H": "12"}),
     "grid_corridor_agent":  ("grid_corridor_agent.py",   {}),
     "grid_corridor_agent3": ("grid_corridor_agent.py",   {"CORRIDOR_INSTANCE": "corridor3"}),
+    "agent_smith":          ("agent_smith.py",           {"SMITH_INSTANCE": "smith"}),
     "dca_nil_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "nil", "DCA_SYMBOL": "NILUSDT"}),
     "dca_esp_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "esp", "DCA_SYMBOL": "ESPUSDT"}),
     "dca_ace_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "ace", "DCA_SYMBOL": "ACEUSDT"}),
@@ -233,6 +235,7 @@ def ensure_journal_dirs():
         BASE / "trading_journal_max4",
         BASE / "trading_journal_corridor",
         BASE / "trading_journal_corridor3",
+        BASE / "trading_journal_smith",
         BASE / "trading_journal_dca_nil",
         BASE / "trading_journal_dca_esp",
         BASE / "trading_journal_dca_ace",
