@@ -1,24 +1,26 @@
-"""Agent #5 — XRP Dynamic Grid (auto-replenish, avg TP, balance protection).
+"""Agent #5 — XRP Live Trailing Grid (pending orders, no stops).
 
 Strategy:
-  - Corridor: 1.01-1.21 (~2% range), dynamic based on ATR
-  - Grid: buy below price, sell above, both sides pending limit orders
-  - Auto-replenish: when a level closes in profit → new pending order placed
-  - Average TP: when multiple levels filled → TP = avg_entry + spread
-  - Balance protection: >50% balance in positions → hold, adjust TP, no new entries
-  - Volatility-based spacing: wider ATR → wider grid steps
-  - No stop losses — only trailing to breakeven
-  - 50x leverage, $1000 bankroll
+  - Living grid: 5 pending buy limits below price, 5 sell limits above price
+  - Grid follows price: when price drifts away, unfilled levels re-center
+    around the current price (trailing grid), filled levels keep their TP
+  - No stop losses: every level exits ONLY at TP (ATR-based, always in profit)
+  - Auto-replenish: when a side fully closes in profit -> new grid rebuilt
+    around the current price
+  - Balance protection: >50% bankroll in positions -> no new entries,
+    existing TPs stay untouched
+  - Volatility-based spacing: wider ATR -> wider grid steps
+  - 50x leverage, $1000 bankroll, honest per-level trade history
 """
 
-import hashlib, json, os, signal, sys, time
+import json, os, signal, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
 BINANCE_BASE = "https://api.binance.com/api/v3"
-UA = "XRPBot/5.0"
+UA = "XRPBot/6.0"
 SYMBOL = "XRPUSDT"
 
 JOURNAL_DIR = Path(__file__).parent.parent / "trading_journal_xrp"
@@ -30,12 +32,15 @@ STATE_FILE = JOURNAL_DIR / "xrp_state.json"
 BANKROLL = 1000.0
 LEVERAGE = 50
 TAKER_FEE = 0.0004
-SLIPPAGE = 0.001
+SLIPPAGE = 0.0002
 FUNDING_RATE = 0.0001
 
 GRID_LEVELS = 5
-GRID_SPACING_PCT = 0.004  # 0.4% between levels (tight)
-MAX_BALANCE_USAGE = 0.50  # 50% — stop new entries if positions exceed this
+GRID_SPACING_PCT = 0.003   # 0.3% minimum spacing between levels
+SPACING_MULT = 0.6         # ATR multiplier for grid spacing
+TP_MULT = 2.5              # ATR multiplier for TP distance (always in profit)
+MAX_BALANCE_USAGE = 0.50   # 50% — stop new entries if positions exceed this
+RE_CENTER_TRIGGER = 2.5    # spacing units of drift before levels re-center
 
 UA_HDR = {"User-Agent": UA}
 
@@ -77,61 +82,14 @@ def fetch_orderbook_imbalance(symbol="XRPUSDT"):
         return 0
 
 
-def check_leading_indicators():
-    """Check ETH and LINK ATR for leading signals on XRP vol.
-    Returns: dict with leading signal strength (0-1) and recommended action."""
-    xrp_atr = fetch_atr("XRPUSDT")
-    eth_atr = fetch_atr("ETHUSDT")
-    try:
-        eth_atr_pct = eth_atr / (float(requests.get(
-            f"{BINANCE_BASE}/ticker/price?symbol=ETHUSDT",
-            headers=UA_HDR, timeout=5).json()["price"]))
-    except Exception:
-        eth_atr_pct = 0
-
-    # Has ETH vol spiked recently? (check 1h ago vs now)
-    try:
-        r = requests.get(f"{BINANCE_BASE}/klines?symbol=ETHUSDT&interval=1h&limit=4",
-                         headers=UA_HDR, timeout=10)
-        if r.status_code == 200:
-            eth_kl = r.json()
-            if len(eth_kl) >= 3:
-                eth_range_now = (float(eth_kl[-1][2]) - float(eth_kl[-1][3])) / float(eth_kl[-1][4])
-                eth_range_1h = (float(eth_kl[-2][2]) - float(eth_kl[-2][3])) / float(eth_kl[-2][4])
-                eth_vol_spike = eth_range_now > eth_range_1h * 1.5
-            else:
-                eth_vol_spike = False
-        else:
-            eth_vol_spike = False
-    except Exception:
-        eth_vol_spike = False
-
-    return {
-        "eth_spike": eth_vol_spike,
-        "eth_atr": eth_atr,
-        "xrp_atr": xrp_atr,
-    }
-
-
 def get_grid_params():
-    """Calculate dynamic grid parameters based on market conditions.
-    Returns: spacing_mult, tp_mult, buy_skew (0=neutral, >0=more buys)."""
-    leads = check_leading_indicators()
-    imbalance = fetch_orderbook_imbalance("XRPUSDT")
-    atr = leads["xrp_atr"]
+    """Calculate dynamic grid parameters based on ATR and order book."""
+    atr = fetch_atr(SYMBOL)
+    imbalance = fetch_orderbook_imbalance(SYMBOL)
+    spacing_mult = SPACING_MULT
+    tp_mult = TP_MULT
+    buy_skew = 0
 
-    # Default params
-    spacing_mult = 0.8   # ATR multiplier for grid spacing
-    tp_mult = 3.0        # ATR multiplier for TP distance
-    buy_skew = 0         # 0 = symmetric, +1 = more buy levels
-
-    # ETH vol spike → expect XRP vol in 1h → tighten grid
-    if leads["eth_spike"]:
-        spacing_mult = 0.5   # tighter grid to catch move
-        tp_mult = 4.0        # wider TP for bigger expected move
-        print(f"  [LEADING] ETH vol spike detected — tightening grid, widening TP", file=sys.stderr)
-
-    # Order book imbalance → directional skew
     if imbalance > 0.15:
         buy_skew = 1
     elif imbalance > 0.08:
@@ -142,7 +100,7 @@ def get_grid_params():
         buy_skew = -0.5
 
     return {"spacing_mult": spacing_mult, "tp_mult": tp_mult, "buy_skew": buy_skew,
-            "imbalance": imbalance, "atr": atr, "eth_spike": leads["eth_spike"]}
+            "imbalance": imbalance, "atr": atr}
 
 
 def load_grids():
@@ -165,6 +123,7 @@ def load_state():
 
 def save_state(s): STATE_FILE.write_text(json.dumps(s, indent=2, ensure_ascii=False))
 
+
 def compute_costs(size_usd, hours):
     notion = size_usd / LEVERAGE
     return {"fee": notion * TAKER_FEE * 2, "slip": size_usd * SLIPPAGE,
@@ -181,74 +140,119 @@ def total_exposure(grids):
     return total
 
 
-def avg_entry_for_side(grids, side):
-    """Calculate volume-weighted average entry for all filled positions on one side."""
-    total_size = 0.0
-    weighted_sum = 0.0
-    for g in grids:
-        if g["type"].startswith(side):  # "buy" or "sell"
-            for l in g.get("levels", []):
-                if l.get("filled") and not l.get("tp_hit") and l.get("fill_price"):
-                    total_size += l.get("size_usd", 0)
-                    weighted_sum += l.get("fill_price", 0) * l.get("size_usd", 0)
-    if total_size == 0:
-        return None
-    return weighted_sum / total_size
-
-
-def build_level_entry(side, base_price, level_idx, atr, size_base, params=None):
-    """Generate one grid level with individual TP. Uses dynamic params from research."""
-    if params is None:
-        params = {"spacing_mult": 0.8, "tp_mult": 3.0, "buy_skew": 0}
-
-    spacing = max(atr * params["spacing_mult"], base_price * GRID_SPACING_PCT)
+def build_level(side, base_price, level_idx, atr, spacing, params):
+    size_base = [40, 48, 58, 70, 84][level_idx if level_idx < 5 else 4]
     size = round(size_base * (1.15 ** level_idx) * LEVERAGE, 2)
 
     if side == "buy":
-        # Buy skew: move entries CLOSER to price (easier to fill)
-        entry = round(base_price - spacing * (level_idx + 1) * (0.7 if params["buy_skew"] > 0 else 1.0), 4)
-        tp = round(entry + atr * params["tp_mult"], 4)
+        mult = 0.7 if params["buy_skew"] > 0 else 1.0
+        entry = round(base_price - spacing * (level_idx + 1) * mult, 4)
+        tp = round(entry + spacing * params["tp_mult"], 4)
     else:
-        # Sell skew: move entries FARTHER from price (harder to fill)
-        entry = round(base_price + spacing * (level_idx + 1) * (1.3 if params["buy_skew"] > 0 else 1.0), 4)
-        tp = round(entry - atr * params["tp_mult"], 4)
+        mult = 1.3 if params["buy_skew"] > 0 else 1.0
+        entry = round(base_price + spacing * (level_idx + 1) * mult, 4)
+        tp = round(entry - spacing * params["tp_mult"], 4)
 
     return {"side": side, "entry": entry, "tp": tp, "size_usd": size,
             "filled": False, "fill_price": None, "fill_time": None,
             "tp_hit": False, "exit_price": None,
             "pnl_usd": None, "gross_pnl": None,
             "fees_paid": None, "slippage_cost": None, "funding_paid": None,
-            "trailing_active": False, "trailing_sl": None}
+            "level": level_idx + 1}
 
 
-def rebuild_grid(side, base_price, atr, params=None):
-    """Build a fresh grid of 5 levels with dynamic params."""
-    size_bases = [40, 48, 58, 70, 84]
-    result = []
-    for i in range(GRID_LEVELS):
-        lvl = build_level_entry(side, base_price, i, atr, size_bases[i], params)
-        lvl["level"] = i + 1
-        result.append(lvl)
-    return result
+def build_grid(type_, price, atr, params):
+    spacing = max(atr * params["spacing_mult"], price * GRID_SPACING_PCT)
+    return {"id": f"xrp_{type_}", "symbol": SYMBOL, "type": type_, "status": "open",
+            "opened_at": datetime.now(timezone.utc).isoformat(),
+            "last_checked_at": datetime.now(timezone.utc).isoformat(),
+            "base_price": price, "spacing": spacing,
+            "levels": [build_level(type_, price, i, atr, spacing, params)
+                       for i in range(GRID_LEVELS)]}
+
+
+def migrate_legacy_grids(grids, history):
+    """Legacy (v5) grids have no 'spacing' key and closed TRAIL levels with
+    realized losses that were never written to history. Fix them: record every
+    closed level, then rebuild fresh grids around the current price."""
+    now_utc = datetime.now(timezone.utc)
+    migrated = False
+    for grid in grids:
+        if "spacing" in grid:
+            continue
+        migrated = True
+        for lvl in grid.get("levels", []):
+            if lvl.get("tp_hit") and not lvl.get("_saved") and lvl.get("pnl_usd") is not None:
+                lvl["_saved"] = True
+                record_trade(history, lvl, grid, now_utc)
+    if migrated:
+        print(f"  [MIGRATE] legacy v5 grids closed {history['stats']['total']} trades into history", file=sys.stderr)
+    return migrated
 
 
 def init_grids():
     existing = load_grids()
-    if existing: return existing
+    if existing:
+        history = load_history()
+        if migrate_legacy_grids(existing, history):
+            save_history(history)
+        price = fetch_ticker(SYMBOL)
+        atr = fetch_atr(SYMBOL)
+        params = get_grid_params()
+        if any("spacing" not in g for g in existing):
+            existing = [build_grid("buy", price, atr, params),
+                        build_grid("sell", price, atr, params)]
+            save_grids(existing)
+        return existing
     price = fetch_ticker(SYMBOL) or 1.05
     atr = fetch_atr(SYMBOL)
     params = get_grid_params()
-    now = datetime.now(timezone.utc).isoformat()
-    grids = [
-        {"id": "xrp_buy", "symbol": SYMBOL, "type": "buy", "status": "open",
-         "opened_at": now, "last_checked_at": now, "base_price": price,
-         "levels": rebuild_grid("buy", price, atr, params)},
-        {"id": "xrp_sell", "symbol": SYMBOL, "type": "sell", "status": "open",
-         "opened_at": now, "last_checked_at": now, "base_price": price,
-         "levels": rebuild_grid("sell", price, atr, params)},
-    ]
+    grids = [build_grid("buy", price, atr, params),
+             build_grid("sell", price, atr, params)]
     save_grids(grids)
     return grids
+
+
+def recenter_grid(grid, price, atr, params):
+    """Move unfilled levels of a grid around the current price (trailing)."""
+    spacing = max(atr * params["spacing_mult"], price * GRID_SPACING_PCT)
+    moved = 0
+    for i, lvl in enumerate(grid["levels"]):
+        if lvl.get("filled") and not lvl.get("tp_hit"):
+            continue  # in position — keep entry and TP untouched
+        if lvl.get("tp_hit"):
+            continue
+        fresh = build_level(grid["type"], price, i, atr, spacing, params)
+        lvl.update(fresh)
+        moved += 1
+    grid["base_price"] = price
+    grid["spacing"] = spacing
+    grid["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+    return moved
+
+
+def record_trade(history, lvl, grid, now_utc):
+    s = history["stats"]
+    s["total"] += 1
+    pnl = lvl.get("pnl_usd") or 0.0
+    if pnl > 0:
+        s["wins"] += 1
+        s["best_trade"] = max(s["best_trade"], pnl)
+    else:
+        s["losses"] += 1
+        s["worst_trade"] = min(s["worst_trade"], pnl)
+    s["total_pnl"] += pnl
+    s["total_fees"] = s.get("total_fees", 0) + (lvl.get("fees_paid") or 0)
+    s["total_slippage"] = s.get("total_slippage", 0) + (lvl.get("slippage_cost") or 0)
+    s["total_funding"] = s.get("total_funding", 0) + (lvl.get("funding_paid") or 0)
+    history["trades"].append({
+        "ts": now_utc.isoformat(), "side": lvl["side"], "grid_id": grid["id"],
+        "entry": lvl.get("fill_price"), "exit": lvl.get("exit_price"),
+        "hit_type": lvl.get("hit_type", "TP"), "pnl_usd": pnl,
+        "size_usd": lvl.get("size_usd"),
+    })
+    history["trades"] = history["trades"][-200:]
+    lvl["_saved"] = True
 
 
 def check_grids():
@@ -261,19 +265,32 @@ def check_grids():
     if not price:
         return grids
 
-    # Process each grid
+    atr = fetch_atr(SYMBOL)
+    params = get_grid_params()
+
     for grid in grids:
         if grid["status"] != "open":
             continue
 
+        # Trailing: re-center pending levels if price drifted far from base
+        base = grid.get("base_price") or price
+        spacing = grid.get("spacing") or max(atr * params["spacing_mult"], price * GRID_SPACING_PCT)
+        drift = abs(price - base) / spacing if spacing else 0
+        if drift > RE_CENTER_TRIGGER:
+            moved = recenter_grid(grid, price, atr, params)
+            if moved:
+                updated = True
+                state["last_replenish"] = now_utc.isoformat()
+                print(f"  [TRAIL] price drifted {drift:.1f}x spacing -> levels re-centered ({moved} moved)", file=sys.stderr)
+
+        side = grid["type"]
+
         for lvl in grid["levels"]:
             if lvl.get("tp_hit"):
                 continue
-
-            side = lvl["side"]
             entry = lvl["entry"]
 
-            # Fill check
+            # Fill check (pending limit order)
             if not lvl.get("filled"):
                 if (side == "buy" and price <= entry) or (side == "sell" and price >= entry):
                     lvl["filled"] = True
@@ -281,26 +298,12 @@ def check_grids():
                     lvl["fill_time"] = now_utc.isoformat()
                     updated = True
 
-            # TP / trailing check
-            if lvl.get("filled") and not lvl.get("tp_hit"):
-                fill = lvl["fill_price"]
+            # TP check — the ONLY exit, always in profit
+            if lvl.get("filled"):
                 tp = lvl["tp"]
-
-                # Trailing to breakeven
-                trail_active = lvl.get("trailing_active", False)
-                if not trail_active:
-                    if (side == "buy" and price >= fill + 0.0015) or (side == "sell" and price <= fill - 0.0015):
-                        lvl["trailing_active"] = True
-                        lvl["trailing_sl"] = round(fill + 0.0001, 6) if side == "buy" else round(fill - 0.0001, 6)
-                        updated = True
-
-                trail_sl = lvl.get("trailing_sl")
-                tp_hit = (side == "buy" and price >= tp) or (side == "sell" and price <= tp)
-                sl_hit = trail_sl and ((side == "buy" and price <= trail_sl) or (side == "sell" and price >= trail_sl))
-
-                if tp_hit or sl_hit:
-                    exit_price = tp if tp_hit else trail_sl
-                    exit_slip = exit_price * (1 - SLIPPAGE) if side == "buy" else exit_price * (1 + SLIPPAGE)
+                fill = lvl["fill_price"]
+                if (side == "buy" and price >= tp) or (side == "sell" and price <= tp):
+                    exit_slip = tp * (1 - SLIPPAGE) if side == "buy" else tp * (1 + SLIPPAGE)
                     lvl["exit_price"] = round(exit_slip, 6)
                     lvl["tp_hit"] = True
 
@@ -315,72 +318,31 @@ def check_grids():
                     lvl["fees_paid"] = round(costs["fee"], 4)
                     lvl["slippage_cost"] = round(costs["slip"], 4)
                     lvl["funding_paid"] = round(costs["fund"], 4)
-                    lvl["hit_type"] = "TP" if tp_hit else "TRAIL"
+                    lvl["hit_type"] = "TP"
+                    lvl["_saved"] = True
+                    record_trade(history, lvl, grid, now_utc)
                     updated = True
 
-        # Grid complete
-        if all(lvl.get("tp_hit") for lvl in grid["levels"]):
-            grid["status"] = "closed"
-            grid["closed_at"] = now_utc.isoformat()
-            updated = True
-
-    # Auto-replenish: rebuild grids if all levels closed in profit
+    # Auto-replenish: rebuild a side once all its levels have closed
     for grid in grids:
-        if grid["status"] == "closed":
+        if grid["status"] == "open" and all(lvl.get("tp_hit") for lvl in grid["levels"]):
             total_pnl = sum((l.get("pnl_usd") or 0) for l in grid["levels"])
-            if total_pnl > 0 and price:
+            if price:
                 params = get_grid_params()
                 atr = fetch_atr(SYMBOL)
-                grid["status"] = "open"
-                grid["opened_at"] = now_utc.isoformat()
-                grid["base_price"] = price
-                grid["levels"] = rebuild_grid(grid["type"], price, atr, params)
-                grid["closed_at"] = None
+                fresh = build_grid(grid["type"], price, atr, params)
+                grid.update(fresh)
                 updated = True
 
-    # Balance protection: if >50% balance used, adjust TPs to average
-    exposure = total_exposure(grids)
-    exposure_pct = exposure / BANKROLL * 100
-
-    if exposure_pct > 50:
-        # Calculate avg entry for both sides
-        avg_long = avg_entry_for_side(grids, "buy")
-        avg_short = avg_entry_for_side(grids, "sell")
-
-        # Adjust TP to average + spread
-        for grid in grids:
-            for lvl in grid["levels"]:
-                if lvl.get("filled") and not lvl.get("tp_hit"):
-                    if lvl["side"] == "buy" and avg_long:
-                        lvl["tp"] = round(avg_long * 1.02, 4)  # 2% above avg
-                        updated = True
-                    elif lvl["side"] == "sell" and avg_short:
-                        lvl["tp"] = round(avg_short * 0.98, 4)  # 2% below avg
-                        updated = True
+    # Balance protection: heavy exposure -> no new levels, TPs stay
+    exposure_pct = total_exposure(grids) / BANKROLL * 100
+    if exposure_pct > MAX_BALANCE_USAGE * 100:
+        print(f"  [BALANCE] Exposure {exposure_pct:.0f}% > {MAX_BALANCE_USAGE*100:.0f}% — holding, no new entries", file=sys.stderr)
 
     if updated:
         save_grids(grids)
-
-        for grid in grids:
-            if grid.get("_closed_saved"):
-                continue
-            total_pnl = sum((l.get("pnl_usd") or 0) for l in grid["levels"])
-            any_closed = any(l.get("tp_hit") for l in grid["levels"])
-            if any_closed and total_pnl != 0 and not all(l.get("tp_hit") for l in grid["levels"]):
-                continue  # partially closed, not a full grid close
-            # Only save fully resolved grids
-            if all(l.get("tp_hit") for l in grid["levels"]) or grid["status"] == "closed":
-                s = history["stats"]
-                s["total"] += 1
-                if total_pnl > 0: s["wins"] += 1; s["best_trade"] = max(s["best_trade"], total_pnl)
-                else: s["losses"] += 1; s["worst_trade"] = min(s["worst_trade"], total_pnl)
-                s["total_pnl"] += total_pnl
-                s["total_fees"] = s.get("total_fees", 0) + sum((l.get("fees_paid") or 0) for l in grid["levels"])
-                s["total_slippage"] = s.get("total_slippage", 0) + sum((l.get("slippage_cost") or 0) for l in grid["levels"])
-                s["total_funding"] = s.get("total_funding", 0) + sum((l.get("funding_paid") or 0) for l in grid["levels"])
-                grid["_closed_saved"] = True
-
         save_history(history)
+        save_state(state)
 
     return grids
 
@@ -393,13 +355,7 @@ def run_cycle():
     exposure = total_exposure(grids)
     exposure_pct = exposure / BANKROLL * 100
 
-    avg_long = avg_entry_for_side(grids, "buy")
-    avg_short = avg_entry_for_side(grids, "sell")
-
-    # Signals
     sigs = []
-    if params["eth_spike"]:
-        sigs.append("ETH SPIKE")
     if params["imbalance"] > 0.1:
         sigs.append("BULLISH OB")
     elif params["imbalance"] < -0.1:
@@ -407,10 +363,8 @@ def run_cycle():
     sig_str = " | ".join(sigs) if sigs else "NEUTRAL"
 
     print(f"\n{'='*55}")
-    print(f"  XRP DYNAMIC GRID #5 — {datetime.now().strftime('%H:%M:%S')} UTC")
-    print(f"  XRP: ${price:.4f} | ATR: {atr:.4f} | Spacing: {params['spacing_mult']:.1f}x | "
-          f"TP: {params['tp_mult']:.0f}x | Skew: {params['buy_skew']:+.1f}")
-    print(f"  Signals: {sig_str} | Exposure: {exposure_pct:.0f}%")
+    print(f"  XRP LIVE TRAILING GRID #5 — {datetime.now().strftime('%H:%M:%S')} UTC")
+    print(f"  XRP: ${price:.4f} | ATR: {atr:.4f} | Signals: {sig_str} | Exp: {exposure_pct:.0f}%")
     print(f"{'='*55}")
 
     for grid in grids:
@@ -421,18 +375,13 @@ def run_cycle():
         for l in grid["levels"]:
             st = "CLOSED" if l.get("tp_hit") else ("FILLED" if l.get("filled") else "PENDING")
             tp_info = f"${l.get('exit_price',0):.4f}" if l.get("tp_hit") else f"TP@{l['tp']:.4f}"
-            trail = "[TRAIL]" if l.get("trailing_active") else ""
             pnl_s = f"${l.get('pnl_usd',0):+.2f}" if l.get("pnl_usd") is not None else ""
-            print(f"    L{l['level']} {l['side']:4s} @{l['entry']:.4f} | {st:8s} | {tp_info:15s} {trail:8s} {pnl_s:>10s}")
-
-    if avg_long: print(f"\n  Avg LONG entry: ${avg_long:.4f}")
-    if avg_short: print(f"  Avg SHORT entry: ${avg_short:.4f}")
-    if exposure_pct > 50: print(f"  [BALANCE] Exposure {exposure_pct:.0f}% > 50% — TPs adjusted, no new entries")
+            print(f"    L{l['level']} {l['side']:4s} @{l['entry']:.4f} | {st:8s} | {tp_info:15s} {pnl_s:>10s}")
 
     history = load_history()
     s = history["stats"]
     wr = s["wins"] / s["total"] * 100 if s["total"] > 0 else 0
-    print(f"\n  [STATUS] PnL: ${s['total_pnl']:+,.2f} | {s['total']} grids | WR: {wr:.0f}%")
+    print(f"\n  [STATUS] PnL: ${s['total_pnl']:+,.2f} | {s['total']} trades | WR: {wr:.0f}%")
 
 
 def main():
@@ -449,7 +398,7 @@ def main():
         wr = s["wins"] / s["total"] * 100 if s["total"] > 0 else 0
         price = fetch_ticker(SYMBOL)
         exposure = total_exposure(grids) / BANKROLL * 100
-        print(f"XRP Grid #5 | ${price:.4f} | PnL: ${s['total_pnl']:+,.2f} | {s['total']} grids | WR: {wr:.0f}% | Exp: {exposure:.0f}%")
+        print(f"XRP | ${price:.4f} | PnL: ${s['total_pnl']:+,.2f} | {s['total']} trades | WR: {wr:.0f}% | Exp: {exposure:.0f}%")
         for g in grids:
             f = sum(1 for l in g["levels"] if l.get("filled"))
             t = sum(1 for l in g["levels"] if l.get("tp_hit"))
@@ -461,7 +410,7 @@ def main():
         run_cycle()
         return
 
-    print("XRP Dynamic Grid #5 starting...", file=sys.stderr)
+    print("XRP Live Trailing Grid #5 starting...", file=sys.stderr)
     init_grids()
     running = True
     def handler(sig, frame):
