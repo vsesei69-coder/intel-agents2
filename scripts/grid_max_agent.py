@@ -45,6 +45,13 @@ TP_FACTOR = float(os.environ.get("TP_FACTOR", "1.5"))
 MARGIN_SL_PCT = 0.60
 RECENTER_THRESHOLD = GRID_RANGE_PCT * 0.4
 
+# Operation timeframe: fills/Tp-checks run on this candle interval, so a
+# 30m grid ignores 1m noise and only reacts to real swings. BB filter and
+# trend filter use their own configurable intervals (default 15m).
+GRID_TF = os.environ.get("GRID_TF", "1m")
+BB_TF = os.environ.get("BB_TF", "15m")
+GRID_LOOKBACK_MIN = int(os.environ.get("GRID_LOOKBACK_MIN", "45" if GRID_TF == "30m" else "6"))
+
 # Time-exit: a filled level that has NOT hit its TP after MAX_HOLD_H hours is
 # force-closed at market. Without stops, a trend move can push price far from
 # the tiny scalp TP and pin levels forever (blocking grid slots). This is not
@@ -278,10 +285,10 @@ def check_grids():
             recenter_grid(grid, current_price)
             updated = True
 
-        # Fetch last N minutes of 1m candles (Binance only returns closed candles,
-        # so always look back a window regardless of last_check)
-        lookback = now_utc - timedelta(minutes=6)
-        klines = fetch_klines_range(symbol, lookback, now_utc, "1m", 500)
+        # Fetch candles on the operation timeframe (Binance only returns
+        # closed candles, so always look back a window regardless of last_check)
+        lookback = now_utc - timedelta(minutes=GRID_LOOKBACK_MIN)
+        klines = fetch_klines_range(symbol, lookback, now_utc, GRID_TF, 500)
         if not klines:
             # fallback: single synthetic candle from current price
             klines = [{"h": current_price, "l": current_price,
@@ -438,13 +445,13 @@ def decide_mode(change_pct):
 def trend_filter_ok(symbol, change_pct, mode, direction):
     """Entry guard by market mode.
 
-    TREND: ride the trend, but don't add against a sharp 30m counter-pulse.
+    TREND: ride the trend, but don't add against a sharp counter-pulse.
     RANGE: mean-reversion guard — skip fading a strong trend or momentum that
     is still pushing (same as before).
     Returns (ok, reason)."""
     end = datetime.now(timezone.utc)
-    start = end - timedelta(minutes=40)
-    kl = fetch_klines_range(symbol, start, end, "1m", 100)
+    start = end - timedelta(minutes=GRID_LOOKBACK_MIN * 2)
+    kl = fetch_klines_range(symbol, start, end, GRID_TF, 100)
     if kl:
         first_close = kl[0]["c"]
         last_close = kl[-1]["c"]
@@ -503,7 +510,7 @@ def _rsi(closes, period=14):
 
 
 def bb_filter_ok(symbol, direction, mode="range"):
-    """Bandtastic-style Bollinger filter (15m, period 20, 2 sigma).
+    """Bandtastic-style Bollinger filter (BB_TF, period 20, 2 sigma).
 
     long:  price near/inside lower band zone (pos <= BB_MAX_POS) and RSI low.
     short: price near/inside upper band zone (pos >= 1 - BB_MAX_POS) and RSI high.
@@ -515,8 +522,9 @@ def bb_filter_ok(symbol, direction, mode="range"):
         return True, "trend mode, bb bypassed"
 
     end = datetime.now(timezone.utc)
-    start = end - timedelta(hours=6)
-    kl = fetch_klines_range(symbol, start, end, "15m", 40)
+    span_h = 6 if BB_TF == "15m" else 12
+    start = end - timedelta(hours=span_h)
+    kl = fetch_klines_range(symbol, start, end, BB_TF, 60)
     closes = [c["c"] for c in kl]
     if len(closes) < 20:
         return True, "no bb data, allow"

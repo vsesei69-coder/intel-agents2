@@ -53,21 +53,31 @@ echo "[bootstrap]  max_grid (instance=max, scalp 1%/41ord/TPx2.5/50x/BB) pid=$!"
 
 # Scalp grids max2/max3 DISABLED (2026-08-10): 61ord x 50x x TP0.05% proved
 # unprofitable (WR 12%, -$104/-$106). Fees+slippage eat the tiny TP. Slots
-# freed for profitable agents (corridor/stoch/max_grid). Re-enable only after
-# the scalp math is fixed.
+# freed for profitable agents (corridor/stoch/max_grid). max_grid3 re-enabled
+# 2026-08-10 with 30m timeframe + wider steps + TPx3 (see below).
 # FLOAT_INSTANCE=max2 GRID_RANGE=0.015 GRID_ORDERS=61 TP_FACTOR=2.0 \
 #   BALANCE_PER_GRID=0.05 MAX_LEVERAGE=50 BB_FILTER=1 \
 #   nohup python scripts/grid_max_agent.py > logs/max_grid2.log 2>&1 &
-# FLOAT_INSTANCE=max3 GRID_RANGE=0.025 GRID_ORDERS=61 TP_FACTOR=2.0 \
-#   BALANCE_PER_GRID=0.05 MAX_LEVERAGE=50 BB_FILTER=1 \
-#   nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
 
 # Second float grid, wider range: complements the 1% scalp with 3% swing
 # entries, own journal. max_grid family proved profitable (+$308, WR 58%).
-FLOAT_INSTANCE=max4 GRID_RANGE=0.03 GRID_ORDERS=41 TP_FACTOR=2.0 \
-  BALANCE_PER_GRID=0.04 MAX_LEVERAGE=30 BB_FILTER=1 \
+# 30m ops timeframe: fills/TP only on 30m swings, no 1m noise. 21 orders
+# (step 0.143%), TPx3 (0.43% target) is comfortably above fees+slippage.
+FLOAT_INSTANCE=max4 GRID_RANGE=0.03 GRID_ORDERS=21 TP_FACTOR=3.0 \
+  BALANCE_PER_GRID=0.04 MAX_LEVERAGE=30 BB_FILTER=1 GRID_TF=30m BB_TF=30m \
+  MAX_HOLD_H=12 \
   nohup python scripts/grid_max_agent.py > logs/max_grid4.log 2>&1 &
-echo "[bootstrap]  max_grid4 (instance=max4, 3%/41ord/TPx2/30x/BB) pid=$!"
+echo "[bootstrap]  max_grid4 (instance=max4, 3%/21ord/TPx3/30x/30m) pid=$!"
+
+# Third float grid, re-enabled on 30m timeframe after the 1m scalp version
+# burned -$106 (WR 0%, 61ord x 0.04% step - fees ate the micro TP). New setup:
+# 2.5% range, 17 orders (0.147% step), TPx3 (0.44%), 40x, own journal,
+# 30m fills + 30m BB filter.
+FLOAT_INSTANCE=max3 GRID_RANGE=0.025 GRID_ORDERS=17 TP_FACTOR=3.0 \
+  BALANCE_PER_GRID=0.04 MAX_LEVERAGE=40 BB_FILTER=1 GRID_TF=30m BB_TF=30m \
+  MAX_HOLD_H=12 \
+  nohup python scripts/grid_max_agent.py > logs/max_grid3.log 2>&1 &
+echo "[bootstrap]  max_grid3 (instance=max3, 2.5%/17ord/TPx3/40x/30m) pid=$!"
 
 nohup python scripts/status_server.py 8080 > "logs/status_server.log" 2>&1 &
 echo "[bootstrap]  status_server pid=$!"
