@@ -358,7 +358,7 @@ def check_grids():
                         if lvl.get("fill_price"):
                             pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if lvl["side"] == "buy" \
                                   else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
-                            gross = lvl["size_usd"] * pct * grid["leverage"]
+                            gross = lvl["size_usd"] * pct
                             opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
                             hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
                             costs = compute_costs(lvl["size_usd"], hours, grid["leverage"])
@@ -411,7 +411,7 @@ def check_grids():
                             lvl["exit_price"] = round(exit_slip, 8)
                             lvl["tp_time"] = c["t"].isoformat()
                             pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"]
-                            gross = lvl["size_usd"] * pct * grid["leverage"]
+                            gross = lvl["size_usd"] * pct
                             opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
                             hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
                             costs = compute_costs(lvl["size_usd"], hours, grid["leverage"])
@@ -429,7 +429,7 @@ def check_grids():
                             lvl["exit_price"] = round(exit_slip, 8)
                             lvl["tp_time"] = c["t"].isoformat()
                             pct = (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
-                            gross = lvl["size_usd"] * pct * grid["leverage"]
+                            gross = lvl["size_usd"] * pct
                             opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
                             hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
                             costs = compute_costs(lvl["size_usd"], hours, grid["leverage"])
@@ -449,6 +449,63 @@ def check_grids():
             grid["closed_at"] = now_utc.isoformat()
             updated = True
 
+        # Side-imbalance guard: >70% of one side filled -> price left the
+        # corridor in one direction, close at market before it runs away.
+        if grid["status"] == "open" and len(grid["levels"]) >= 8:
+            buys = [l for l in grid["levels"] if l["side"] == "buy"]
+            sells = [l for l in grid["levels"] if l["side"] == "sell"]
+            filled_buys = sum(1 for l in buys if l.get("filled") and not l.get("tp_hit"))
+            filled_sells = sum(1 for l in sells if l.get("filled") and not l.get("tp_hit"))
+            side_ratio = max(filled_buys, filled_sells) / max(len(grid["levels"]), 1)
+            if side_ratio > 0.70 and klines:
+                c = klines[-1]
+                grid["status"] = "closed"
+                grid["closed_at"] = c["t"].isoformat()
+                grid["corridor_broken"] = True
+                grid["side_imbalance"] = True
+                for lvl in grid["levels"]:
+                    if lvl.get("filled") and not lvl.get("tp_hit"):
+                        exit_slip = c["c"] * (1 - SLIPPAGE) if lvl["side"] == "buy" else c["c"] * (1 + SLIPPAGE)
+                        lvl["exit_price"] = round(exit_slip, 8)
+                        if lvl.get("fill_price"):
+                            pct = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] if lvl["side"] == "buy" \
+                                  else (lvl["fill_price"] - exit_slip) / lvl["fill_price"]
+                            gross = lvl["size_usd"] * pct
+                            opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
+                            hours = max((c["t"] - opened_dt).total_seconds() / 3600, 0)
+                            costs = compute_costs(lvl["size_usd"], hours, grid["leverage"])
+                            lvl["pnl_usd"] = round(gross - costs["fee"] - costs["slip"] - costs["fund"], 2)
+                            lvl["gross_pnl"] = round(gross, 2)
+                            lvl["fees_paid"] = costs["fee"]
+                            lvl["slippage_cost"] = costs["slip"]
+                            lvl["funding_paid"] = costs["fund"]
+                updated = True
+                print(f"  [SIDE IMBALANCE] {grid['symbol']} {max(filled_buys, filled_sells)}"
+                      f"/{len(grid['levels'])} one side filled — closed at market", file=sys.stderr)
+
+        # Trailing: re-center unfilled levels toward current price so the grid
+        # rides a slow drift instead of stacking one side until the break.
+        if grid["status"] == "open" and klines:
+            last_price = klines[-1]["c"]
+            mid = grid.get("mid_price") or grid.get("price")
+            drift = (last_price - mid) / mid if mid else 0
+            if drift > 0.004 and last_price > mid:
+                unfilled = [l for l in grid["levels"]
+                            if not l.get("filled") and l["side"] == "buy"
+                            and l["entry"] < last_price]
+                for lvl in unfilled:
+                    lvl["entry"] = round(lvl["entry"] + drift * mid * 0.5, 6)
+                if unfilled:
+                    updated = True
+            elif drift < -0.004 and last_price < mid:
+                unfilled = [l for l in grid["levels"]
+                            if not l.get("filled") and l["side"] == "sell"
+                            and l["entry"] > last_price]
+                for lvl in unfilled:
+                    lvl["entry"] = round(lvl["entry"] + drift * mid * 0.5, 6)
+                if unfilled:
+                    updated = True
+
         if grid["status"] == "open":
             grid["last_checked_at"] = now_utc.isoformat()
             updated = True
@@ -458,6 +515,7 @@ def check_grids():
 
         for grid in grids:
             if grid["status"] == "closed":
+                filled_count = sum(1 for lvl in grid["levels"] if lvl.get("filled"))
                 total_pnl = sum((lvl.get("pnl_usd") or 0) for lvl in grid["levels"])
                 total_fees = sum((lvl.get("fees_paid") or 0) for lvl in grid["levels"])
                 total_slip = sum((lvl.get("slippage_cost") or 0) for lvl in grid["levels"])
@@ -474,6 +532,20 @@ def check_grids():
                 s["total_fees"] = s.get("total_fees", 0) + total_fees
                 s["total_slippage"] = s.get("total_slippage", 0) + total_slip
                 s["total_funding"] = s.get("total_funding", 0) + total_fund
+                history.setdefault("trades", []).append({
+                    "symbol": grid["symbol"],
+                    "timeframe": grid["timeframe"],
+                    "direction": "long/short",
+                    "pnl": round(total_pnl, 2),
+                    "tp_hit": not grid.get("corridor_broken"),
+                    "opened": grid["opened_at"],
+                    "closed": grid.get("closed_at"),
+                    "reason": ("BROKE" if grid.get("corridor_broken") else "TP"),
+                    "leverage": grid.get("leverage"),
+                    "num_orders": len(grid.get("levels", [])),
+                    "filled": filled_count,
+                    "corridor_pct": grid.get("corridor_pct"),
+                })
 
         active = [g for g in grids if g["status"] == "open"]
         save_grids(active)

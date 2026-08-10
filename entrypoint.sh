@@ -10,7 +10,7 @@ mkdir -p /opt/intel/trading_journal \
          /opt/intel/trading_journal_max3 \
          /opt/intel/trading_journal_max4 \
          /opt/intel/trading_journal_corridor \
-         /opt/intel/trading_journal_corridor2 \
+         /opt/intel/trading_journal_corridor3 \
          /opt/intel/trading_journal_dca_nil \
          /opt/intel/trading_journal_dca_esp \
          /opt/intel/trading_journal_dca_ace \
@@ -27,10 +27,12 @@ for a in grid_agent grid_corridor_agent xrp_grid_agent stoch_agent level_grid_ag
   echo "[bootstrap]  $a pid=$!"
 done
 
-# Second corridor instance: sleeps on its own journal, doubles the flat-pair
-# coverage (corridor proved profitable: +$513 / 25 trades / WR 64%).
-CORRIDOR_INSTANCE=corridor2 nohup python scripts/grid_corridor_agent.py > logs/corridor2.log 2>&1 &
-echo "[bootstrap]  corridor2 (instance=corridor2) pid=$!"
+# corridor2 DISABLED (2026-08-10 21:35): double-leverage bug inflated PnL
+# (gross = size_usd*pct*lev with size_usd already leveraged). Fixed.
+# corridor3: same strategy, corrected math, trailing re-center, side-imbalance
+# guard (close at market when one side >70% filled), real trade journaling.
+CORRIDOR_INSTANCE=corridor3 nohup python scripts/grid_corridor_agent.py > logs/corridor3.log 2>&1 &
+echo "[bootstrap]  corridor3 (instance=corridor3) pid=$!"
 
 # DCA scale-in grids (no stops) on trending volatile pairs picked by
 # daily/weekly RSI screen. One $1000 bot per pair, 15x lev, 8 levels,
