@@ -177,8 +177,23 @@ def check_grid():
 
     # Chase rising trend: re-center upward when price runs above the whole grid.
     if center > 0 and px > center * (1 + RECENTER_PCT):
-        # close any filled levels at market, then rebuild higher
-        _close_filled(grid, px, history, now_utc, "recenter-up")
+        closed_pnl = _close_filled(grid, px, history, now_utc, "recenter-up")
+        if closed_pnl:
+            s = history["stats"]
+            s["total"] += 1
+            if closed_pnl > 0:
+                s["wins"] += 1
+                s["best_trade"] = max(s.get("best_trade", 0), closed_pnl)
+            else:
+                s["losses"] += 1
+                s["worst_trade"] = min(s.get("worst_trade", 0), closed_pnl)
+            s["total_pnl"] += closed_pnl
+            history["trades"].append({
+                "symbol": symbol, "direction": "long",
+                "pnl": round(closed_pnl, 2), "reason": "recenter-up",
+                "opened": grid["opened_at"], "closed": now_utc.isoformat(),
+            })
+            save_history(history)
         grid["center_price"] = px
         grid["last_checked_at"] = now_utc.isoformat()
         # reset: drop unfilled levels, rebuild fresh around new price
@@ -187,6 +202,12 @@ def check_grid():
         return True, f"re-centered up to {px}"
 
     lookback = now_utc - timedelta(minutes=6)
+    try:
+        opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
+        if opened_dt > lookback:
+            lookback = opened_dt
+    except Exception:
+        pass
     klines = fetch_klines_range(symbol, lookback, now_utc, "1m", 500)
     if not klines:
         klines = [{"h": px, "l": px, "c": px, "t": now_utc}]
@@ -255,7 +276,7 @@ def check_grid():
 
 
 def _close_filled(grid, px, history, now_utc, reason):
-    closed_any = False
+    total_pnl = 0.0
     for lvl in grid["levels"]:
         if lvl.get("tp_hit") or not lvl.get("filled"):
             continue
@@ -274,8 +295,8 @@ def _close_filled(grid, px, history, now_utc, reason):
         gross = lvl["size_usd"] * pnl_pct
         net = gross - costs["fee"] - costs["slip"] - costs["fund"]
         lvl["pnl_usd"] = round(net, 2)
-        closed_any = True
-    return closed_any
+        total_pnl += net
+    return total_pnl
 
 
 def open_new_grid():
