@@ -32,18 +32,24 @@ SERVICES = ["intel-agents", "omniroute"]
 JOB = "mythos-inference"
 
 AGENTS = [
-    "grid_agent", "grid_max_agent", "grid_max_agent2", "grid_max_agent3",
-    "grid_corridor_agent", "xrp_grid_agent", "stoch_agent", "level_grid_agent",
+    "grid_agent", "grid_max_agent", "grid_max_agent4",
+    "grid_corridor_agent", "grid_corridor_agent2",
+    "dca_nil_agent", "dca_esp_agent", "dca_ace_agent", "dca_onu_agent",
+    "xrp_grid_agent", "stoch_agent", "level_grid_agent",
 ]
 AGENT_PROCESSES = {
-    "grid_agent":        ("grid_agent.py",          {}),
-    "grid_max_agent":    ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max"}),
-    "grid_max_agent2":   ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max2", "FLOAT_BIAS": "long"}),
-    "grid_max_agent3":   ("grid_max_agent.py",      {"FLOAT_INSTANCE": "max3", "FLOAT_BIAS": "short"}),
-    "grid_corridor_agent": ("grid_corridor_agent.py", {}),
-    "xrp_grid_agent":    ("xrp_grid_agent.py",      {}),
-    "stoch_agent":       ("stoch_agent.py",         {}),
-    "level_grid_agent":  ("level_grid_agent.py",    {}),
+    "grid_agent":           ("grid_agent.py",            {}),
+    "grid_max_agent":       ("grid_max_agent.py",        {"FLOAT_INSTANCE": "max",  "GRID_RANGE": "0.01", "GRID_ORDERS": "41", "TP_FACTOR": "2.5", "BALANCE_PER_GRID": "0.05", "MAX_LEVERAGE": "50", "BB_FILTER": "1"}),
+    "grid_max_agent4":      ("grid_max_agent.py",        {"FLOAT_INSTANCE": "max4", "GRID_RANGE": "0.03", "GRID_ORDERS": "41", "TP_FACTOR": "2.0", "BALANCE_PER_GRID": "0.04", "MAX_LEVERAGE": "30", "BB_FILTER": "1"}),
+    "grid_corridor_agent":  ("grid_corridor_agent.py",   {}),
+    "grid_corridor_agent2": ("grid_corridor_agent.py",   {"CORRIDOR_INSTANCE": "corridor2"}),
+    "dca_nil_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "nil", "DCA_SYMBOL": "NILUSDT"}),
+    "dca_esp_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "esp", "DCA_SYMBOL": "ESPUSDT"}),
+    "dca_ace_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "ace", "DCA_SYMBOL": "ACEUSDT"}),
+    "dca_onu_agent":        ("grid_dca_agent.py",        {"DCA_INSTANCE": "onu", "DCA_SYMBOL": "ONUSDT"}),
+    "xrp_grid_agent":       ("xrp_grid_agent.py",        {}),
+    "stoch_agent":          ("stoch_agent.py",           {}),
+    "level_grid_agent":     ("level_grid_agent.py",      {}),
 }
 
 CHECK_INTERVAL = int(os.environ.get("WATCHDOG_INTERVAL", "60"))
@@ -51,6 +57,9 @@ MAX_RESTARTS = int(os.environ.get("WATCHDOG_MAX_RESTARTS", "3"))
 VOLUME_THRESHOLD_PCT = int(os.environ.get("WATCHDOG_VOLUME_PCT", "85"))
 
 LOG_TAIL = 3000  # байт хвоста лога для сканирования
+CLEANUP_INTERVAL = 480  # циклов (60с) = ~8 часов между очистками
+LOG_MAX_BYTES = 500_000  # 500KB — порог для обрезки лога
+LOG_KEEP_LINES = 500     # сколько строк оставлять при обрезке
 
 
 def now_iso():
@@ -74,7 +83,7 @@ def load_state():
             return json.loads(STATE_FILE.read_text())
     except Exception:
         pass
-    return {"restarts": {}, "actions": 0}
+    return {"restarts": {}, "actions": 0, "cycles": 0}
 
 
 def save_state(state):
@@ -220,7 +229,13 @@ def ensure_journal_dirs():
         BASE / "trading_journal",
         BASE / "trading_journal_grid",
         BASE / "trading_journal_max",
+        BASE / "trading_journal_max4",
         BASE / "trading_journal_corridor",
+        BASE / "trading_journal_corridor2",
+        BASE / "trading_journal_dca_nil",
+        BASE / "trading_journal_dca_esp",
+        BASE / "trading_journal_dca_ace",
+        BASE / "trading_journal_dca_onu",
         BASE / "trading_journal_xrp",
         BASE / "trading_journal_stoch",
         BASE / "trading_journal_levels",
@@ -230,6 +245,42 @@ def ensure_journal_dirs():
             d.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+
+
+def cleanup_logs():
+    """Trim agent log files and operator.jsonl when they get too large.
+
+    Each .log in /opt/intel/logs is truncated to the last LOG_KEEP_LINES
+    lines when it exceeds LOG_MAX_BYTES.  operator.jsonl gets the same
+    treatment.  Runs once every ~8 hours (every CLEANUP_INTERVAL cycles)."""
+    trimmed = []
+
+    # Agent .log files
+    if LOGS.exists():
+        for p in LOGS.iterdir():
+            if p.name.endswith(".log") and p.is_file():
+                try:
+                    if p.stat().st_size > LOG_MAX_BYTES:
+                        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+                        p.write_text("\n".join(lines[-LOG_KEEP_LINES:]) + "\n",
+                                     encoding="utf-8")
+                        trimmed.append(f"{p.name}({len(lines)}->{LOG_KEEP_LINES})")
+                except Exception:
+                    pass
+
+    # operator.jsonl
+    olog = LOGS / "operator.jsonl"
+    if olog.exists():
+        try:
+            if olog.stat().st_size > LOG_MAX_BYTES:
+                lines = olog.read_text(encoding="utf-8", errors="replace").splitlines()
+                olog.write_text("\n".join(lines[-LOG_KEEP_LINES:]) + "\n",
+                                encoding="utf-8")
+                trimmed.append(f"operator.jsonl({len(lines)}->{LOG_KEEP_LINES})")
+        except Exception:
+            pass
+
+    return trimmed
 
 
 def run_checks(state):
@@ -296,6 +347,13 @@ def main():
         try:
             actions = run_checks(state)
             state["actions"] = state.get("actions", 0) + len(actions)
+            state["cycles"] = state.get("cycles", 0) + 1
+            # Auto-trim logs every ~8 hours
+            if state["cycles"] % CLEANUP_INTERVAL == 0:
+                trimmed = cleanup_logs()
+                if trimmed:
+                    log_event("logs_trimmed", {"files": trimmed})
+                    actions.append(f"trimmed {len(trimmed)} log(s)")
             save_state(state)
             if actions:
                 log_event("cycle_actions", {"actions": actions})
