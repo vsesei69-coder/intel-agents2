@@ -22,7 +22,8 @@ import requests
 BINANCE_BASE = "https://api.binance.com/api/v3"
 UA = "CorridorBot/4.0"
 
-JOURNAL_DIR = Path(__file__).parent.parent / "trading_journal_corridor"
+CORRIDOR_INSTANCE = os.environ.get("CORRIDOR_INSTANCE", "corridor")
+JOURNAL_DIR = Path(__file__).parent.parent / f"trading_journal_{CORRIDOR_INSTANCE}"
 JOURNAL_DIR.mkdir(exist_ok=True)
 GRIDS_FILE = JOURNAL_DIR / "open_grids.json"
 HISTORY_FILE = JOURNAL_DIR / "corridor_history.json"
