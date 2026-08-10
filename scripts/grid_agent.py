@@ -374,7 +374,7 @@ def check_grids():
                         lvl["tp_time"] = c["t"].isoformat()
 
                         # Gross PnL
-                        gross_pnl = (exit_with_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                        gross_pnl = (exit_with_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"]
                         # Costs
                         entry_notional = lvl["size_usd"] / MAX_LEVERAGE
                         fee = entry_notional * TAKER_FEE * 2  # open + close
@@ -398,7 +398,7 @@ def check_grids():
                         lvl["exit_price"] = round(exit_with_slip, 8)
                         lvl["tp_time"] = c["t"].isoformat()
 
-                        gross_pnl = (lvl["fill_price"] - exit_with_slip) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                        gross_pnl = (lvl["fill_price"] - exit_with_slip) / lvl["fill_price"] * lvl["size_usd"]
                         entry_notional = lvl["size_usd"] / MAX_LEVERAGE
                         fee = entry_notional * TAKER_FEE * 2
                         slip_cost = lvl["size_usd"] * SLIPPAGE
@@ -436,9 +436,9 @@ def check_grids():
                         lvl["sl_time"] = c["t"].isoformat()
                         if lvl.get("fill_price"):
                             if direction == "long":
-                                gross = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                                gross = (exit_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"]
                             else:
-                                gross = (lvl["fill_price"] - exit_slip) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                                gross = (lvl["fill_price"] - exit_slip) / lvl["fill_price"] * lvl["size_usd"]
                             entry_notional = lvl["size_usd"] / MAX_LEVERAGE
                             fee = entry_notional * TAKER_FEE * 2
                             slip_cost = lvl["size_usd"] * SLIPPAGE
@@ -468,9 +468,9 @@ def check_grids():
                             lvl["sl_time"] = c["t"].isoformat()
                             if lvl["fill_price"]:
                                 if direction == "long":
-                                    gross_pnl = (exit_with_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                                    gross_pnl = (exit_with_slip - lvl["fill_price"]) / lvl["fill_price"] * lvl["size_usd"]
                                 else:
-                                    gross_pnl = (lvl["fill_price"] - exit_with_slip) / lvl["fill_price"] * lvl["size_usd"] * MAX_LEVERAGE
+                                    gross_pnl = (lvl["fill_price"] - exit_with_slip) / lvl["fill_price"] * lvl["size_usd"]
                                 entry_notional = lvl["size_usd"] / MAX_LEVERAGE
                                 fee = entry_notional * TAKER_FEE * 2
                                 slip_cost = lvl["size_usd"] * SLIPPAGE

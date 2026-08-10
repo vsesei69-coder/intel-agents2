@@ -308,7 +308,7 @@ def check_grids():
                     lvl["tp_hit"] = True
 
                     pct = (exit_slip - fill) / fill if side == "buy" else (fill - exit_slip) / fill
-                    gross = lvl["size_usd"] * pct * LEVERAGE
+                    gross = lvl["size_usd"] * pct
                     opened_dt = datetime.fromisoformat(grid["opened_at"].replace("Z", "+00:00"))
                     hours = max((now_utc - opened_dt).total_seconds() / 3600, 0)
                     costs = compute_costs(lvl["size_usd"], hours)

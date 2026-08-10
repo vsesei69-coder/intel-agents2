@@ -199,7 +199,7 @@ def check_grids():
                     lvl["tp_hit"] = True
 
                     pct = (exit_slip - fill) / fill if side == "buy" else (fill - exit_slip) / fill
-                    gross = lvl["size_usd"] * pct * grid["leverage"]
+                    gross = lvl["size_usd"] * pct
                     hours = 1
                     costs = compute_costs(lvl["size_usd"], hours, grid["leverage"])
                     net = gross - costs["fee"] - costs["slip"] - costs["fund"]

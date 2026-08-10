@@ -118,8 +118,7 @@ def compute_atr(candles, period=14):
 
 
 def compute_costs(size_usd, hours):
-    notion = size_usd / LEVERAGE
-    return {"fee": notion * TAKER_FEE * 2, "slip": size_usd * SLIPPAGE,
+    return {"fee": size_usd * TAKER_FEE * 2, "slip": size_usd * SLIPPAGE,
             "fund": size_usd * FUNDING_RATE * (hours / 8)}
 
 
@@ -276,14 +275,14 @@ def check_position():
             pos["closed_at"] = datetime.now(timezone.utc).isoformat()
 
             pct = (exit_slip - entry) / entry if direction == "long" else (entry - exit_slip) / entry
-            gross = size * pct * LEVERAGE
+            gross = size * pct
             opened_dt = datetime.fromisoformat(pos["opened_at"].replace("Z", "+00:00"))
             hours = max((datetime.now(timezone.utc) - opened_dt).total_seconds() / 3600, 0)
             costs = compute_costs(size, hours)
             net = gross - costs["fee"] - costs["slip"] - costs["fund"]
 
             pos["pnl_usd"] = round(net, 2)
-            pos["pnl_pct"] = round(pct * LEVERAGE * 100, 2)
+            pos["pnl_pct"] = round(pct * 100, 2)
             pos["fees_paid"] = round(costs["fee"], 4)
             pos["slippage_cost"] = round(costs["slip"], 4)
             pos["funding_paid"] = round(costs["fund"], 4)
