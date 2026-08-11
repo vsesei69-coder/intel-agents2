@@ -6,357 +6,447 @@
 <title>Neitis Trading Dashboard</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:Consolas,monospace;background:#0d1117;color:#c9d1d9;display:flex;height:100vh}
-/* === LEFT PANEL === */
-#panel{width:380px;min-width:380px;background:#161b22;border-right:1px solid #30363d;overflow-y:auto;padding:12px}
-#panel h1{font-size:16px;color:#58a6ff;margin-bottom:4px}
-#panel .ts{font-size:11px;color:#8b949e;margin-bottom:12px}
-.agent{margin-bottom:10px;padding:8px;border:1px solid #21262d;border-radius:6px;cursor:pointer;transition:all .15s}
+body{font-family:Consolas,monospace;background:#0d1117;color:#c9d1d9;display:flex;height:100vh;overflow:hidden}
+#panel{width:360px;min-width:360px;background:#161b22;border-right:1px solid #30363d;overflow-y:auto;padding:10px}
+#panel h1{font-size:15px;color:#58a6ff;margin-bottom:2px}
+#panel .ts{font-size:10px;color:#8b949e;margin-bottom:8px}
+.agent{margin-bottom:8px;padding:6px 8px;border:1px solid #21262d;border-radius:4px;cursor:pointer}
 .agent:hover{border-color:#58a6ff}
-.agent.active{border-color:#3fb950;background:#1a2e1a}
-.agent .name{font-size:13px;font-weight:bold}
-.agent .name .badge{font-size:10px;padding:2px 6px;border-radius:3px;margin-left:6px}
-.badge.win{background:#1a3a1a;color:#3fb950}
-.badge.loss{background:#3a1a1a;color:#f85149}
-.agent .stats{font-size:11px;color:#8b949e;margin-top:4px}
-.grid-row{font-size:10px;padding:3px 0;border-bottom:1px solid #21262d;display:flex;justify-content:space-between}
-.grid-row .sym{color:#58a6ff}
+.agent .name{font-size:12px;font-weight:bold}
+.agent .name .badge{font-size:10px;padding:1px 5px;border-radius:2px;margin-left:4px}
+.badge.green{background:#1a3a1a;color:#3fb950}
+.badge.red{background:#3a1a1a;color:#f85149}
+.badge.gray{background:#21262d;color:#8b949e}
+.agent .stats{font-size:10px;color:#8b949e;margin-top:2px}
+.grid-row{font-size:10px;padding:2px 0;border-bottom:1px solid #161b22;display:flex;justify-content:space-between}
+.grid-row .sym{color:#58a6ff;cursor:pointer}
 .grid-row .lev{color:#ffa657}
-.grid-row .levels{color:#8b949e}
-.total{font-size:14px;margin-top:8px;padding:6px;background:#21262d;border-radius:4px}
-.total .pos{color:#3fb950}
-.total .neg{color:#f85149}
-/* === MAIN CHART === */
+.grid-row .info{color:#8b949e}
+.total{font-size:13px;margin-top:8px;padding:6px;background:#21262d;border-radius:4px}
+.total .pos{color:#3fb950}.total .neg{color:#f85149}
 #main{flex:1;display:flex;flex-direction:column}
-#chart-header{padding:8px 16px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:12px}
-#chart-header select{padding:4px 8px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:4px;font-family:Consolas,monospace;font-size:12px}
-#chart-header .price{font-size:18px;font-weight:bold}
-#chart-header .price.up{color:#3fb950}
-#chart-header .price.dn{color:#f85149}
-#chart-header .info{font-size:11px;color:#8b949e}
-canvas{flex:1;display:block}
-#error{display:none;padding:20px;color:#f85149}
+#toolbar{padding:6px 12px;background:#161b22;border-bottom:1px solid #30363d;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#toolbar button,#toolbar select{padding:3px 10px;background:#21262d;color:#c9d1d9;border:1px solid #30363d;border-radius:3px;font-family:Consolas,monospace;font-size:11px;cursor:pointer}
+#toolbar button:hover,#toolbar select:hover{background:#30363d}
+#toolbar button.active{background:#1f6feb;border-color:#1f6feb}
+#toolbar .sep{width:1px;height:20px;background:#30363d;margin:0 4px}
+#toolbar .price{font-size:16px;font-weight:bold;margin-left:auto}
+#toolbar .price.up{color:#3fb950}
+#toolbar .price.dn{color:#f85149}
+#toolbar .sym-name{color:#58a6ff;font-weight:bold;font-size:13px}
+#chart-wrap{flex:1;position:relative;cursor:crosshair}
+#chart-wrap canvas{position:absolute;top:0;left:0}
+#error{display:none;position:absolute;bottom:10px;left:10px;background:#3a1a1a;color:#f85149;padding:6px 12px;border-radius:4px;font-size:11px;z-index:10}
+#legend{position:absolute;top:4px;right:8px;font-size:9px;color:#8b949e;z-index:5;pointer-events:none;text-align:right}
+#legend div{margin:1px 0}
 </style>
 </head>
 <body>
-
 <div id="panel">
   <h1>NEITIS TRADING</h1>
   <div id="ts" class="ts">loading...</div>
   <div id="total" class="total">...</div>
   <div id="agents"></div>
 </div>
-
 <div id="main">
-  <div id="chart-header">
-    <span id="ch-symbol" style="font-weight:bold;color:#58a6ff">--</span>
-    <span id="ch-price" class="price">--</span>
-    <span id="ch-info" class="info">--</span>
+  <div id="toolbar">
+    <span class="sym-name" id="tb-symbol">--</span>
+    <span class="sep"></span>
+    <button onclick="setTF('1m')" data-tf="1m">1m</button>
+    <button onclick="setTF('5m')" data-tf="5m">5m</button>
+    <button onclick="setTF('15m')" data-tf="15m" class="active">15m</button>
+    <button onclick="setTF('30m')" data-tf="30m">30m</button>
+    <button onclick="setTF('1h')" data-tf="1h">1h</button>
+    <button onclick="setTF('4h')" data-tf="4h">4h</button>
+    <span class="sep"></span>
+    <button onclick="setTool('cross')" class="active" data-tool="cross">✥</button>
+    <button onclick="setTool('hline')" data-tool="hline">━ H</button>
+    <button onclick="setTool('trend')" data-tool="trend">╱ T</button>
+    <button onclick="clearDrawings()">✕ clear</button>
+    <span class="sep"></span>
+    <span id="tb-price" class="price">--</span>
   </div>
-  <canvas id="chart"></canvas>
-  <div id="error"></div>
+  <div id="chart-wrap">
+    <canvas id="chart"></canvas>
+    <div id="legend"></div>
+    <div id="error"></div>
+  </div>
 </div>
 
 <script>
 const API = 'https://status--intel-agents--krq52hqdvwwl.code.run';
 const AUTH = 'Basic ' + btoa('ishkin:neitis-status-2026');
 
-let agentsData = {};
-let activeSymbols = {};
-let selectedSymbol = null;
-let priceCache = {};
-let chartCanvas, ctx;
+let state = {
+  symbol: null,
+  tf: '15m',
+  tool: 'cross',
+  klines: [], bb: null, sr: { supports: [], resistances: [] },
+  price: null, prevPrice: null,
+  grids: [],
+  drawings: [],
+  drawing: null, // in-progress
+  panX: 0, scaleX: 1,
+  mouseX: 0, mouseY: 0,
+  dragStart: null,
+  priceCache: {},
+};
+
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+const wrap = document.getElementById('chart-wrap');
 
 function hasOpen(x) { return x && (typeof x.open === 'string' ? parseInt(x.open) : x.open) > 0; }
-function pnlColor(v) { return v >= 0 ? 'pos' : 'neg'; }
+function pnlColor(v) { return v>=0?'pos':'neg'; }
+function fmtPx(p) { return p>1?p.toFixed(4):p>0.1?p.toFixed(6):p.toFixed(8); }
 
 async function fetchJSON(url) {
-  const r = await fetch(url, { headers: { Authorization: AUTH }, signal: AbortSignal.timeout(15000) });
+  const r = await fetch(url, { headers: { Authorization: AUTH }, signal: AbortSignal.timeout(12000) });
   if (!r.ok) throw new Error(r.status);
   return r.json();
 }
-
-async function fetchBinancePrice(symbol) {
+async function fetchPrice(sym) {
   try {
-    const r = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`, { signal: AbortSignal.timeout(5000) });
-    const d = await r.json();
-    return parseFloat(d.price);
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${sym}`, { signal: AbortSignal.timeout(4000) });
+    return parseFloat((await r.json()).price);
   } catch(e) { return null; }
 }
-
-async function fetchBinanceKlines(symbol, interval='15m', limit=100) {
+async function fetchKlines(sym, tf, lim=120) {
   try {
-    const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}`, { signal: AbortSignal.timeout(10000) });
-    const raw = await r.json();
-    return raw.map(k => ({ t: k[0], o: +k[1], h: +k[2], l: +k[3], c: +k[4], v: +k[5] }));
+    const r = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${sym}&interval=${tf}&limit=${lim}`, { signal: AbortSignal.timeout(8000) });
+    return (await r.json()).map(k=>({t:k[0],o:+k[1],h:+k[2],l:+k[3],c:+k[4],v:+k[5]}));
   } catch(e) { return []; }
 }
 
-function bb(closes, period=20, std=2.0) {
+function computeBB(closes, period=20, std=2.0) {
   if (closes.length < period) return null;
-  const slice = closes.slice(-period);
-  const sma = slice.reduce((a,b)=>a+b,0)/period;
-  const variance = slice.reduce((s,c)=>s+(c-sma)**2,0)/period;
-  const stdev = Math.sqrt(variance);
-  return { mid: sma, upper: sma + std*stdev, lower: sma - std*stdev };
+  const s = closes.slice(-period);
+  const sma = s.reduce((a,b)=>a+b)/period;
+  const v = s.reduce((a,c)=>a+(c-sma)**2,0)/period;
+  const stdev = Math.sqrt(v);
+  return {mid:sma,upper:sma+std*stdev,lower:sma-std*stdev};
 }
 
-async function refresh() {
+function computeSR(klines, lookback=60) {
+  const levels = {};
+  const recent = klines.slice(-lookback);
+  for (const k of recent) {
+    for (const p of [k.h, k.l, k.c]) {
+      const r = Math.round(p * 10000) / 10000;
+      levels[r] = (levels[r]||0) + 1;
+    }
+  }
+  const sorted = Object.entries(levels).sort((a,b)=>b[1]-a[1]);
+  const price = recent[recent.length-1]?.c || 0;
+  const supports = [], resistances = [];
+  for (const [p, count] of sorted) {
+    const v = parseFloat(p);
+    if (count < 3) continue;
+    if (v < price && supports.length < 5) supports.push({level:v,strength:count});
+    if (v > price && resistances.length < 5) resistances.push({level:v,strength:count});
+  }
+  supports.sort((a,b)=>b.level-a.level);
+  resistances.sort((a,b)=>a.level-b.level);
+  return { supports, resistances };
+}
+
+async function loadData() {
   try {
-    const status = await fetchJSON(API + '/status');
-    document.getElementById('ts').textContent = 'Server: ' + (status.ts || '?');
-
-    // Total PnL
-    let totalPnl = 0, totalTrades = 0;
+    const status = await fetchJSON(API+'/status');
+    document.getElementById('ts').textContent = 'Server: '+(status.ts||'?');
     const agents = status.agents || {};
-    const agentKeys = Object.keys(agents).sort();
+    let totalPnl = 0, totalTrades = 0;
+    const symGrids = {};
+    let html = '';
 
-    let agentsHTML = '';
-    const newActive = {};
-
-    for (const name of agentKeys) {
-      const a = agents[name];
+    for (const [name, a] of Object.entries(agents)) {
       if (!a) continue;
-      const pnl = parseFloat(a.pnl) || 0;
-      const trades = parseInt(a.trades) || 0;
-      const wr = parseFloat(a.wr) || 0;
-      const open = parseInt(a.open) || 0;
+      const pnl = parseFloat(a.pnl)||0, trades = parseInt(a.trades)||0, wr = parseFloat(a.wr)||0, open = parseInt(a.open)||0;
+      totalPnl += pnl; totalTrades += trades;
 
-      totalPnl += pnl;
-      totalTrades += trades;
-
+      let grids = [];
       if (open > 0) {
-        // Fetch open grids
-        try {
-          const grids = await fetchJSON(API + '/rawopen/' + name);
-          a._grids = grids || [];
-          for (const g of grids) {
-            if (!newActive[g.symbol]) newActive[g.symbol] = [];
-            newActive[g.symbol].push({ agent: name, grid: g });
-          }
-        } catch(e) { a._grids = []; }
+        try { grids = await fetchJSON(API+'/rawopen/'+name); } catch(e) {}
+        for (const g of grids||[]) {
+          if (!symGrids[g.symbol]) symGrids[g.symbol] = [];
+          symGrids[g.symbol].push({agent:name, grid:g});
+        }
       }
 
-      const active = open > 0 ? 'active' : '';
-      const cls = pnlColor(pnl);
-      agentsHTML += `
-        <div class="agent ${active}" onclick="selectSymbol('${name}')" data-agent="${name}">
-          <div class="name">${name}
-            <span class="badge ${cls}">$${pnl.toFixed(2)}</span>
-            <span class="badge win" style="background:#21262d;color:#8b949e">${trades}t</span>
-          </div>
-          <div class="stats">WR ${wr.toFixed(0)}% | Open: ${open} | ${a.mtime || ''}</div>
-          ${(a._grids||[]).map(g => `
-            <div class="grid-row" style="cursor:pointer" onclick="event.stopPropagation();selectSymbol('${g.symbol}')">
-              <span class="sym">${g.symbol}</span>
-              <span class="lev">${g.leverage||'?'}x</span>
-              <span class="levels">${g.levels?g.levels.length:'?'} lvls</span>
-            </div>
-          `).join('')}
-        </div>`;
+      const cls = pnl>=0?'green':'red';
+      html += `<div class="agent">
+        <div class="name">${name}
+          <span class="badge ${cls}">$${pnl.toFixed(2)}</span>
+          <span class="badge gray">${trades}t</span></div>
+        <div class="stats">WR ${wr.toFixed(0)}% | Open: ${open} | ${a.mtime||''}</div>
+        ${(grids||[]).map(g=>`<div class="grid-row">
+          <span class="sym" onclick="selectSymbol('${g.symbol}')">${g.symbol}</span>
+          <span class="lev">${g.leverage||'?'}x</span>
+          <span class="info">${(g.levels||[]).length}lv</span></div>`).join('')}
+      </div>`;
     }
 
-    document.getElementById('total').innerHTML = `
-      TOTAL: <span class="${pnlColor(totalPnl)}">$${totalPnl.toFixed(2)}</span> | Trades: ${totalTrades}
-    `;
+    document.getElementById('total').innerHTML = `TOTAL: <span class="${pnlColor(totalPnl)}">$${totalPnl.toFixed(2)}</span> | Trades: ${totalTrades}`;
+    document.getElementById('agents').innerHTML = html;
+    document.getElementById('error').style.display = 'none';
 
-    document.getElementById('agents').innerHTML = agentsHTML;
-    agentsData = agents;
-    activeSymbols = newActive;
-
-    // Auto-select first active grid
-    const symbols = Object.keys(newActive);
-    if (!selectedSymbol && symbols.length > 0) selectSymbol(symbols[0]);
-
-    // Refresh chart if symbol selected
-    if (selectedSymbol) drawChart(selectedSymbol);
+    // Auto-select
+    if (!state.symbol && Object.keys(symGrids).length > 0) {
+      selectSymbol(Object.keys(symGrids)[0]);
+    }
+    if (state.symbol) state.grids = symGrids[state.symbol] || [];
+    else state.grids = [];
 
   } catch(e) {
     document.getElementById('error').style.display = 'block';
-    document.getElementById('error').textContent = 'API ERROR: ' + e.message;
+    document.getElementById('error').textContent = 'API: '+e.message;
   }
 }
 
 async function selectSymbol(sym) {
-  selectedSymbol = sym;
-  document.getElementById('ch-symbol').textContent = sym;
-  document.getElementById('ch-price').textContent = '...';
-  await drawChart(sym);
+  state.symbol = sym;
+  state.scaleX = 1; state.panX = 0;
+  document.getElementById('tb-symbol').textContent = sym;
+  await refreshChart();
 }
 
-async function drawChart(symbol) {
-  chartCanvas = document.getElementById('chart');
-  ctx = chartCanvas.getContext('2d');
+async function refreshChart() {
+  if (!state.symbol) return;
+  const sym = state.symbol;
+  const tf = state.tf;
 
-  const price = await fetchBinancePrice(symbol);
-  const priceEl = document.getElementById('ch-price');
-  if (price) {
-    const prev = priceCache[symbol] || price;
-    priceCache[symbol] = price;
-    priceEl.textContent = '$' + price.toFixed(price > 1 ? 2 : 6);
-    priceEl.className = 'price ' + (price >= prev ? 'up' : 'dn');
+  state.klines = await fetchKlines(sym, tf, 120);
+  state.price = await fetchPrice(sym);
+  if (state.price) {
+    state.prevPrice = state.priceCache[sym] || state.price;
+    state.priceCache[sym] = state.price;
+    const el = document.getElementById('tb-price');
+    el.textContent = '$'+fmtPx(state.price);
+    el.className = 'price '+(state.price >= state.prevPrice ? 'up' : 'dn');
   }
 
-  const klines = await fetchBinanceKlines(symbol, '15m', 50);
-  if (!klines.length) {
-    document.getElementById('ch-info').textContent = 'no data';
-    return;
+  if (state.klines.length) {
+    const closes = state.klines.map(k=>k.c);
+    state.bb = computeBB(closes);
+    state.sr = computeSR(state.klines, Math.min(60, state.klines.length));
   }
 
-  const closes = klines.map(k => k.c);
-  const bbData = bb(closes);
-  if (!bbData) return;
+  draw();
+}
 
-  // Find grid info for this symbol
-  const grids = activeSymbols[symbol] || [];
-  document.getElementById('ch-info').textContent = grids.length + ' agents | BB mid:' + bbData.mid.toFixed(6) + ' upper:' + bbData.upper.toFixed(6) + ' lower:' + bbData.lower.toFixed(6);
+function draw() {
+  const W = wrap.clientWidth;
+  const H = wrap.clientHeight;
+  canvas.width = W; canvas.height = H;
 
-  const W = chartCanvas.parentElement.clientWidth - 4;
-  const H = chartCanvas.parentElement.clientHeight - 60;
-  chartCanvas.width = W;
-  chartCanvas.height = H;
-  chartCanvas.style.width = W + 'px';
-  chartCanvas.style.height = H + 'px';
+  const pad = {t:16,r:50,b:30,l:70};
+  const pw = W - pad.l - pad.r;
+  const ph = H - pad.t - pad.b;
 
-  const padding = { top: 20, right: 40, bottom: 40, left: 80 };
-  const pw = W - padding.left - padding.right;
-  const ph = H - padding.top - padding.bottom;
-
-  const prices = [...klines.map(k => k.h), ...klines.map(k => k.l)];
-  if (bbData) prices.push(bbData.upper, bbData.lower);
-  for (const g of grids) {
-    for (const lvl of (g.grid.levels || [])) {
-      prices.push(lvl.entry, lvl.tp);
-    }
-  }
-  const minP = Math.min(...prices) * 0.999;
-  const maxP = Math.max(...prices) * 1.001;
-
-  const xScale = (i) => padding.left + (i / (klines.length - 1)) * pw;
-  const yScale = (p) => padding.top + ph - ((p - minP) / (maxP - minP)) * ph;
-
-  // Clear
   ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillRect(0,0,W,H);
+
+  const klines = state.klines;
+  if (!klines.length) return;
+
+  // Price range
+  let minP = Infinity, maxP = -Infinity;
+  const visCount = Math.floor(klines.length / state.scaleX);
+  const startIdx = Math.max(0, klines.length - visCount - Math.floor(state.panX));
+  const visible = klines.slice(startIdx);
+
+  for (const k of visible) { minP = Math.min(minP, k.l); maxP = Math.max(maxP, k.h); }
+  if (state.bb) { minP = Math.min(minP, state.bb.lower); maxP = Math.max(maxP, state.bb.upper); }
+  for (const d of state.drawings) { minP = Math.min(minP, d.y1, d.y2||d.y1); maxP = Math.max(maxP, d.y1, d.y2||d.y1); }
+  if (state.price) { minP = Math.min(minP, state.price); maxP = Math.max(maxP, state.price); }
+  for (const g of state.grids) for (const l of g.grid.levels||[]) {
+    minP = Math.min(minP, l.entry, l.tp); maxP = Math.max(maxP, l.entry, l.tp);
+  }
+  const mar = (maxP-minP)*0.1;
+  minP -= mar; maxP += mar;
+
+  const xS = (i) => pad.l + ((i-startIdx)/(visible.length-1||1))*pw;
+  const yS = (p) => pad.t + ph - ((p-minP)/(maxP-minP))*ph;
 
   // Grid
-  ctx.strokeStyle = '#21262d';
-  ctx.lineWidth = 0.5;
-  for (let i = 0; i < 5; i++) {
-    const y = padding.top + (ph * i / 4);
-    ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(W - padding.right, y); ctx.stroke();
-    const p = maxP - (maxP - minP) * i / 4;
-    ctx.fillStyle = '#8b949e';
-    ctx.font = '9px Consolas';
-    ctx.fillText(p.toFixed(price > 1 ? 2 : 6), W - padding.right + 4, y + 3);
+  ctx.strokeStyle = '#1a1f2b'; ctx.lineWidth = 0.5;
+  for (let i=0;i<6;i++) {
+    const y=pad.t+ph*i/5;
+    ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
+    ctx.fillStyle='#8b949e'; ctx.font='9px Consolas';
+    const p=maxP-(maxP-minP)*i/5;
+    ctx.fillText(fmtPx(p),W-pad.r+3,y+3);
   }
 
-  // BB bands
-  ctx.strokeStyle = 'rgba(88,166,255,0.3)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([4, 4]);
-  ctx.beginPath();
-  ctx.moveTo(xScale(0), yScale(bbData.upper));
-  ctx.lineTo(xScale(klines.length-1), yScale(bbData.upper));
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(xScale(0), yScale(bbData.lower));
-  ctx.lineTo(xScale(klines.length-1), yScale(bbData.lower));
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // BB mid
-  ctx.strokeStyle = 'rgba(88,166,255,0.6)';
-  ctx.lineWidth = 1;
-  ctx.setLineDash([2, 6]);
-  ctx.beginPath();
-  ctx.moveTo(xScale(0), yScale(bbData.mid));
-  ctx.lineTo(xScale(klines.length-1), yScale(bbData.mid));
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Candlesticks
-  const candleWidth = Math.max(2, pw / klines.length * 0.7);
-  for (let i = 0; i < klines.length; i++) {
-    const k = klines[i];
-    const x = xScale(i);
-    const isGreen = k.c >= k.o;
-    ctx.strokeStyle = isGreen ? '#3fb950' : '#f85149';
-    ctx.fillStyle = isGreen ? '#3fb950' : '#f85149';
-    ctx.lineWidth = 1;
-
-    // Wick
-    ctx.beginPath();
-    ctx.moveTo(x, yScale(k.h));
-    ctx.lineTo(x, yScale(k.l));
-    ctx.stroke();
-
-    // Body
-    const bodyH = Math.abs(yScale(k.o) - yScale(k.c));
-    const bodyY = isGreen ? yScale(k.c) : yScale(k.o);
-    ctx.fillRect(x - candleWidth/2, bodyY, candleWidth, Math.max(1, bodyH));
+  // BB
+  if (state.bb) {
+    ['upper','mid','lower'].forEach((b,i)=>{
+      ctx.strokeStyle = b==='mid'?'rgba(88,166,255,0.5)':'rgba(88,166,255,0.25)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash(b==='mid'?[2,6]:[4,4]);
+      ctx.beginPath(); ctx.moveTo(pad.l,yS(state.bb[b])); ctx.lineTo(W-pad.r,yS(state.bb[b])); ctx.stroke();
+      ctx.setLineDash([]);
+    });
   }
 
-  // Current price line
-  if (price) {
-    ctx.strokeStyle = '#ffa657';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([3, 3]);
-    ctx.beginPath();
-    ctx.moveTo(padding.left, yScale(price));
-    ctx.lineTo(W - padding.right, yScale(price));
-    ctx.stroke();
+  // S/R
+  for (const s of state.sr.supports) {
+    ctx.strokeStyle = 'rgba(63,185,80,0.4)'; ctx.lineWidth = 1; ctx.setLineDash([2,2]);
+    ctx.beginPath(); ctx.moveTo(pad.l,yS(s.level)); ctx.lineTo(W-pad.r,yS(s.level)); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#ffa657';
-    ctx.fillText(price.toFixed(price > 1 ? 2 : 6), W - padding.right - 80, yScale(price) - 4);
+    ctx.fillStyle = '#3fb950'; ctx.font = '8px Consolas';
+    ctx.fillText('S'+s.strength, W-pad.r-24, yS(s.level)-2);
+  }
+  for (const r of state.sr.resistances) {
+    ctx.strokeStyle = 'rgba(248,81,73,0.4)'; ctx.lineWidth = 1; ctx.setLineDash([2,2]);
+    ctx.beginPath(); ctx.moveTo(pad.l,yS(r.level)); ctx.lineTo(W-pad.r,yS(r.level)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#f85149'; ctx.font = '8px Consolas';
+    ctx.fillText('R'+r.strength, W-pad.r-24, yS(r.level)-2);
+  }
+
+  // Candles
+  const cw = Math.max(1.5, ((pw/visible.length)*0.65));
+  for (let i=0; i<visible.length; i++) {
+    const k = visible[i], x = xS(i);
+    const isGreen = k.c >= k.o;
+    ctx.strokeStyle = isGreen?'#3fb950':'#f85149';
+    ctx.fillStyle = isGreen?'#3fb950':'#f85149';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x,yS(k.h)); ctx.lineTo(x,yS(k.l)); ctx.stroke();
+    const bh = Math.max(1,Math.abs(yS(k.o)-yS(k.c)));
+    const by = isGreen?yS(k.c):yS(k.o);
+    ctx.fillRect(x-cw/2,by,cw,bh);
+  }
+
+  // Current price
+  if (state.price) {
+    ctx.strokeStyle = '#ffa657'; ctx.lineWidth = 1.5; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(pad.l,yS(state.price)); ctx.lineTo(W-pad.r,yS(state.price)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ffa657'; ctx.font = 'bold 10px Consolas';
+    ctx.fillText(fmtPx(state.price), W-pad.r-70, yS(state.price)-4);
   }
 
   // Grid levels
-  for (const g of grids) {
+  for (const g of state.grids) {
     const levels = g.grid.levels || [];
-    for (const lvl of levels) {
-      const y = yScale(lvl.entry);
-      const filled = lvl.filled;
-      const tpY = yScale(lvl.tp);
-
-      // Entry line
-      ctx.strokeStyle = filled ? 'rgba(63,185,80,0.6)' : 'rgba(248,81,73,0.3)';
-      ctx.lineWidth = filled ? 1.5 : 0.5;
-      ctx.beginPath();
-      ctx.moveTo(padding.left, y);
-      ctx.lineTo(W - padding.right, y);
-      ctx.stroke();
-
-      // TP marker
-      if (filled && !lvl.tp_hit) {
-        ctx.fillStyle = '#3fb950';
-        ctx.beginPath();
-        ctx.arc(W - padding.right - 30, tpY, 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#8b949e';
-        ctx.font = '8px Consolas';
-        ctx.fillText('TP', W - padding.right - 24, tpY + 3);
+    for (const l of levels) {
+      const y = yS(l.entry), ty = yS(l.tp);
+      ctx.strokeStyle = l.filled?'rgba(63,185,80,0.55)':'rgba(248,81,73,0.3)';
+      ctx.lineWidth = l.filled?1.5:0.5;
+      ctx.beginPath(); ctx.moveTo(pad.l,y); ctx.lineTo(W-pad.r,y); ctx.stroke();
+      if (l.filled && !l.tp_hit) {
+        ctx.fillStyle = '#3fb950'; ctx.beginPath();
+        ctx.arc(W-pad.r-30, ty, 4, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = '#8b949e'; ctx.font = '8px Consolas';
+        ctx.fillText('TP', W-pad.r-24, ty+3);
       }
     }
   }
 
+  // Drawings
+  for (const d of state.drawings) {
+    ctx.strokeStyle = d.color||'#ffa657'; ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (d.type==='hline') { ctx.moveTo(pad.l,yS(d.y1)); ctx.lineTo(W-pad.r,yS(d.y1)); }
+    else { ctx.moveTo(d.x1,d.y1); ctx.lineTo(d.x2,d.y2); }
+    ctx.stroke();
+    // handles
+    ctx.fillStyle = d.color||'#ffa657';
+    ctx.beginPath(); ctx.arc(d.type==='hline'?W-pad.r:d.x1, d.type==='hline'?yS(d.y1):d.y1, 4, 0, Math.PI*2); ctx.fill();
+    if (d.type==='trend') { ctx.beginPath(); ctx.arc(d.x2,d.y2,4,0,Math.PI*2); ctx.fill(); }
+  }
+
+  // In-progress drawing
+  if (state.drawing) {
+    ctx.strokeStyle = '#ffa657'; ctx.lineWidth = 1; ctx.setLineDash([4,4]);
+    ctx.beginPath();
+    if (state.drawing.type==='hline') { ctx.moveTo(pad.l,yS(state.drawing.y1)); ctx.lineTo(W-pad.r,yS(state.drawing.y1)); }
+    else { ctx.moveTo(state.drawing.x1,state.drawing.y1); ctx.lineTo(state.mouseX,state.mouseY); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Legend
+  const leg = [];
+  if (state.bb) leg.push(`BB: ${fmtPx(state.bb.mid)}`);
+  leg.push(`S:${state.sr.supports.length} R:${state.sr.resistances.length}`);
+  leg.push(`scale: ${state.scaleX.toFixed(1)}x`);
+  document.getElementById('legend').innerHTML = leg.map(l=>`<div>${l}</div>`).join('');
+
   // Time labels
-  ctx.fillStyle = '#8b949e';
-  ctx.font = '9px Consolas';
-  for (let i = 0; i < klines.length; i += 10) {
-    const d = new Date(klines[i].t);
-    const t = d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
-    ctx.fillText(t, xScale(i) - 15, H - padding.bottom + 15);
+  ctx.fillStyle = '#8b949e'; ctx.font = '9px Consolas';
+  for (let i=0; i<visible.length; i+=Math.max(1,Math.floor(visible.length/8))) {
+    const d = new Date(visible[i].t);
+    const t = d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+    ctx.fillText(t, xS(i)-15, H-pad.b+15);
   }
 }
 
-// Resize handler
-window.addEventListener('resize', () => { if (selectedSymbol) drawChart(selectedSymbol); });
+// Toolbar actions
+function setTF(tf) {
+  state.tf = tf; state.scaleX = 1; state.panX = 0;
+  document.querySelectorAll('#toolbar button[data-tf]').forEach(b=>b.classList.toggle('active',b.dataset.tf===tf));
+  refreshChart();
+}
+function setTool(tool) {
+  state.tool = tool; state.drawing = null;
+  document.querySelectorAll('#toolbar button[data-tool]').forEach(b=>b.classList.toggle('active',b.dataset.tool===tool));
+}
+function clearDrawings() { state.drawings = []; draw(); }
 
-// Initial load
-refresh();
-// Refresh every 60s
-setInterval(refresh, 60000);
+// Mouse
+wrap.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (state.tool === 'cross') {
+    state.dragStart = { x: mx, y: my, panX: state.panX };
+    state.isDragging = true;
+  } else if (state.tool === 'hline') {
+    const pad = {t:16,r:50,b:30,l:70};
+    const ph = canvas.height - pad.t - pad.b;
+    const klines = state.klines; if (!klines.length) return;
+    const minP = Math.min(...klines.map(k=>k.l))*0.999, maxP = Math.max(...klines.map(k=>k.h))*1.001;
+    const price = maxP - ((my-pad.t)/ph)*(maxP-minP);
+    state.drawings.push({type:'hline',y1:price,color:'#'+Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0')});
+    draw();
+  } else if (state.tool === 'trend') {
+    state.drawing = { type:'trend', x1: mx, y1: my };
+  }
+});
+wrap.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  state.mouseX = e.clientX - rect.left; state.mouseY = e.clientY - rect.top;
+  if (state.isDragging && state.tool === 'cross' && state.dragStart) {
+    const dx = state.mouseX - state.dragStart.x;
+    state.panX = state.dragStart.panX - dx / 15;
+    draw();
+  }
+  if (state.drawing) { draw(); }
+});
+wrap.addEventListener('mouseup', e => {
+  if (state.tool === 'trend' && state.drawing) {
+    state.drawings.push({...state.drawing, color:'#'+Math.floor(Math.random()*0xFFFFFF).toString(16).padStart(6,'0')});
+    state.drawing = null;
+    draw();
+  }
+  state.isDragging = false; state.dragStart = null;
+});
+wrap.addEventListener('wheel', e => {
+  e.preventDefault();
+  const delta = e.deltaY > 0 ? 0.9 : 1.1;
+  state.scaleX = Math.max(0.5, Math.min(5, state.scaleX * delta));
+  draw();
+});
+
+// Refresh
+setInterval(async () => {
+  await loadData();
+  if (state.symbol) await refreshChart();
+}, 60000);
+
+// Init
+loadData();
 </script>
 </body>
 </html>
