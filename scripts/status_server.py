@@ -193,8 +193,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.end_headers()
 
     def do_GET(self):
         try:
@@ -203,6 +212,12 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/" or self.path == "/index.html":
                 s = collect_status()
                 self._send(200, render_html(s).encode(), "text/html; charset=utf-8")
+            elif self.path == "/dashboard" or self.path == "/dashboard/":
+                dash_path = BASE / "scripts" / "dashboard.html"
+                if dash_path.exists():
+                    self._send(200, dash_path.read_bytes(), "text/html; charset=utf-8")
+                else:
+                    self._send(404, b"dashboard not found")
             elif self.path.startswith("/raw/"):
                 name = self.path[len("/raw/"):]
                 jdir = JOURNALS.get(name)
