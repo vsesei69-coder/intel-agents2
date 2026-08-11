@@ -20,7 +20,7 @@ BANKROLL = 1000.0
 LEVERAGE = int(os.environ.get("SMITH_LEVERAGE", "20"))
 MARGIN_PER_LEVEL = float(os.environ.get("SMITH_MARGIN_PCT", "0.02"))  # 2% of bankroll
 GRID_STEP = float(os.environ.get("SMITH_STEP", "0.001"))             # 0.1%
-TP_STEP = GRID_STEP
+TP_STEP = float(os.environ.get("SMITH_TP", "0.003"))                # 0.3% — 3× step to beat costs
 MAX_LEVELS = int(os.environ.get("SMITH_MAX_LEVELS", "20"))
 MAX_FILLED_BEFORE_PAUSE = int(os.environ.get("SMITH_MAX_FILLED", "15"))
 
@@ -167,9 +167,9 @@ def scan_entry(symbol):
         return None
 
     direction = None
-    if pos >= 70 and r >= 50:
+    if pos >= 80 and r >= 50:
         direction = "sell"
-    elif pos <= 30 and r <= 50:
+    elif pos <= 20 and r <= 50:
         direction = "buy"
     else:
         return None

@@ -70,8 +70,8 @@ echo "[bootstrap]  max_grid (instance=max, scalp 1%/41ord/TPx2.5/50x/BB) pid=$!"
 # Second float grid, wider range: complements the 1% scalp with 3% swing
 # entries, own journal. max_grid family proved profitable (+$308, WR 58%).
 # 30m ops timeframe: fills/TP only on 30m swings, no 1m noise. 21 orders
-# (step 0.143%), TPx3 (0.43% target) is comfortably above fees+slippage.
-FLOAT_INSTANCE=max4 GRID_RANGE=0.03 GRID_ORDERS=21 TP_FACTOR=3.0 \
+# (step 0.119%), TPx4.5 (0.54% target) — bumped from TPx3 after cost analysis.
+FLOAT_INSTANCE=max4 GRID_RANGE=0.025 GRID_ORDERS=21 TP_FACTOR=4.5 \
   BALANCE_PER_GRID=0.04 MAX_LEVERAGE=30 BB_FILTER=1 GRID_TF=30m BB_TF=30m \
   MAX_HOLD_H=12 \
   nohup python scripts/grid_max_agent.py > logs/max_grid4.log 2>&1 &
